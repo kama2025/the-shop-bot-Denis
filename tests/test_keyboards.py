@@ -169,39 +169,50 @@ def _all_keyboards() -> list[tuple[str, InlineKeyboardMarkup]]:
 # --- сами проверки ----------------------------------------------------------
 
 
+# Клавиатуры собираются ВНУТРИ тестов, а не в декораторе parametrize.
+#
+# Причина конкретная: если сборка клавиатуры падает (например, из-за стиля,
+# который Telegram не принимает), при сборке в декораторе pytest сообщает об
+# ошибке сбора тестов и возвращает код «прогон не состоялся». Поломка кода
+# должна давать красный тест, а не неопределённость.
+
+
+def _walk(keyboards):
+    for name, markup in keyboards:
+        for row in markup.inline_keyboard:
+            for button in row:
+                yield name, button
+
+
 def test_every_keyboard_builds() -> None:
     keyboards = _all_keyboards()
     assert len(keyboards) > 30, "проверяем не все экраны"
 
 
-@pytest.mark.parametrize(("name", "markup"), _all_keyboards(), ids=lambda v: v if isinstance(v, str) else "")
-def test_styles_are_accepted_by_telegram(name: str, markup: InlineKeyboardMarkup) -> None:
-    for row in markup.inline_keyboard:
-        for button in row:
-            assert button.style is None or button.style in ALLOWED_STYLES, (
-                f"{name}: кнопка {button.text!r} со стилем {button.style!r} — "
-                "Telegram отвергнет всю клавиатуру"
-            )
+def test_styles_are_accepted_by_telegram() -> None:
+    bad = [
+        f"{name}: {button.text!r} → стиль {button.style!r}"
+        for name, button in _walk(_all_keyboards())
+        if button.style is not None and button.style not in ALLOWED_STYLES
+    ]
+    assert not bad, "Telegram отвергнет всю клавиатуру:\n" + "\n".join(bad)
 
 
-@pytest.mark.parametrize(("name", "markup"), _all_keyboards(), ids=lambda v: v if isinstance(v, str) else "")
-def test_callback_data_fits_the_limit(name: str, markup: InlineKeyboardMarkup) -> None:
+def test_callback_data_fits_the_limit() -> None:
     """callback_data длиннее 64 байт Telegram тоже не принимает."""
-    for row in markup.inline_keyboard:
-        for button in row:
-            if button.callback_data is None:
-                continue
-            size = len(button.callback_data.encode())
-            assert size <= CALLBACK_LIMIT, (
-                f"{name}: callback_data {button.callback_data!r} занимает {size} байт"
-            )
+    bad = [
+        f"{name}: {button.callback_data!r} — {len(button.callback_data.encode())} байт"
+        for name, button in _walk(_all_keyboards())
+        if button.callback_data and len(button.callback_data.encode()) > CALLBACK_LIMIT
+    ]
+    assert not bad, "\n".join(bad)
 
 
-@pytest.mark.parametrize(("name", "markup"), _all_keyboards(), ids=lambda v: v if isinstance(v, str) else "")
-def test_every_button_leads_somewhere(name: str, markup: InlineKeyboardMarkup) -> None:
+def test_every_button_leads_somewhere() -> None:
     """Кнопка без действия читается как поломка."""
-    for row in markup.inline_keyboard:
-        for button in row:
-            assert button.callback_data or button.url, (
-                f"{name}: кнопка {button.text!r} ничего не делает"
-            )
+    bad = [
+        f"{name}: {button.text!r}"
+        for name, button in _walk(_all_keyboards())
+        if not (button.callback_data or button.url)
+    ]
+    assert not bad, "кнопки ничего не делают:\n" + "\n".join(bad)
