@@ -156,6 +156,32 @@ MUTATIONS: list[Mutation] = [
         guards="неподписанный не попадает в магазин",
     ),
     Mutation(
+        name="button-style-guard",
+        path="bot/keyboards/theme.py",
+        anchor="SECONDARY = DEFAULT",
+        replacement='SECONDARY = "secondary"  # МУТАЦИЯ',
+        tests=["tests/test_keyboards.py"],
+        breaks="возвращён стиль кнопки, который Telegram не принимает",
+        guards="ни одна клавиатура не собирается со стилем, отвергаемым Telegram",
+    ),
+    Mutation(
+        name="render-send-before-delete",
+        path="bot/utils/render.py",
+        anchor="    sent = await _send(message, text, reply_markup, photo)\n"
+        "    try:\n"
+        "        await message.delete()",
+        replacement="    try:  # МУТАЦИЯ\n"
+        "        await message.delete()\n"
+        "    except TelegramBadRequest:\n"
+        "        pass\n"
+        "    sent = await _send(message, text, reply_markup, photo)\n"
+        "    try:\n"
+        "        pass",
+        tests=["tests/test_render.py"],
+        breaks="старое сообщение удаляется раньше, чем отправлено новое",
+        guards="экран не исчезает у покупателя, если отправка нового упала",
+    ),
+    Mutation(
         name="balance-negative-guard",
         path="bot/repo/balance.py",
         anchor="    if new_balance < 0 and not allow_negative:",

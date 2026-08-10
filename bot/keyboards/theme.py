@@ -15,10 +15,24 @@ from __future__ import annotations
 
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
+# Telegram принимает ровно эти четыре значения. Проверено пробой к Bot API:
+# любое другое («secondary», «gray», «accent») отклоняется целиком —
+# «Bad Request: can't parse InlineKeyboardButton: invalid button style
+# specified», и сообщение не отправляется вообще.
+DEFAULT = "default"
 PRIMARY = "primary"
-SECONDARY = "secondary"
 SUCCESS = "success"
 DANGER = "danger"
+
+ALLOWED_STYLES = frozenset({DEFAULT, PRIMARY, SUCCESS, DANGER})
+
+# Прежнее имя нейтрального стиля. Оставлено, чтобы не переписывать полсотни
+# вызовов, но значение теперь то, которое Telegram действительно понимает.
+SECONDARY = DEFAULT
+
+
+class ButtonStyleError(ValueError):
+    """Стиль кнопки не входит в набор, который принимает Telegram."""
 
 # Названия и значки в одном месте: владелец меняет их правкой этого файла,
 # не разыскивая строки по хендлерам.
@@ -69,6 +83,18 @@ def btn(
     url: str | None = None,
     style: str | None = None,
 ) -> InlineKeyboardButton:
+    """Собирает кнопку, проверяя стиль на месте.
+
+    Неверный стиль Telegram не прощает: он отвергает всю клавиатуру, сообщение
+    не уходит, и экран у покупателя просто исчезает. Ошибку лучше получить
+    здесь, с указанием допустимых значений, чем разбирать «Bad Request» из
+    журнала.
+    """
+    if style is not None and style not in ALLOWED_STYLES:
+        raise ButtonStyleError(
+            f"Стиль кнопки {style!r} Telegram не принимает. "
+            f"Допустимы: {', '.join(sorted(ALLOWED_STYLES))}."
+        )
     return InlineKeyboardButton(
         text=text, callback_data=callback_data, url=url, style=style
     )
