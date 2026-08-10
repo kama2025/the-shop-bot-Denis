@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
-from bot.db.models import Category, Channel, Order, OrderStatus, Product
+from bot.db.models import Category, Channel, DeliveryType, Order, OrderStatus, Product
 from bot.keyboards.theme import (
     DANGER,
     ICON,
@@ -72,7 +72,11 @@ def products(
     keyboard: list[list[InlineKeyboardButton]] = []
     for product in items:
         left = stock.get(product.id, 0)
-        mark = "" if left else " (нет)"
+        if product.delivery_type == DeliveryType.MANUAL:
+            mark = ""
+            left = 1  # «есть», без числа: склада у такого товара нет
+        else:
+            mark = "" if left else " (нет)"
         keyboard.append(
             [
                 btn(

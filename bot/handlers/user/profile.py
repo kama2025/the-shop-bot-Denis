@@ -120,8 +120,8 @@ async def purchase_card(
     lines.append(f"📌 {OrderStatus.TITLES.get(order.status, order.status)}")
 
     if order.status == OrderStatus.DELIVERED and order.kind == OrderKind.PURCHASE:
-        contents = await delivery_service.contents_of(session, order.id)
-        lines += ["", "━━━━━━━━━━━━━━━━━━", delivery_service.format_contents(contents)]
+        items = await delivery_service.items_of(session, order.id)
+        lines += ["", "━━━━━━━━━━━━━━━━━━", delivery_service.format_items(items)]
 
     await show(call, "\n".join(lines), user_kb.simple_back("u:purchases:0"))
 

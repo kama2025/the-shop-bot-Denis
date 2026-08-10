@@ -10,7 +10,7 @@ from aiogram.types import CallbackQuery, Message
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.config import Settings
-from bot.db.models import User
+from bot.db.models import DeliveryType, User
 from bot.keyboards import user as user_kb
 from bot.keyboards.theme import ICON
 from bot.repo import catalog as catalog_repo
@@ -113,6 +113,7 @@ async def open_product(
         await call.answer("Товар недоступен", show_alert=True)
         return
 
+    is_manual = product.delivery_type == DeliveryType.MANUAL
     in_stock = await stock_repo.available_count(session, product.id)
     if in_stock == 0:
         await show(
@@ -134,10 +135,12 @@ async def open_product(
         title=html.escape(product.title),
         description=html.escape(product.description or ""),
         price=format_kop(product.price_kop),
-        stock=in_stock,
+        stock="по запросу" if is_manual else in_stock,
         qty=qty,
         total=format_kop(calc.total_kop),
     )
+    if is_manual:
+        text += "\n🙋 Этот товар выдаёт администратор — он свяжется с вами сразу после оплаты."
     if promo is not None:
         text += f"\n{ICON['promo']} Промокод <b>{html.escape(promo.code)}</b> применён"
 
@@ -187,6 +190,13 @@ async def availability(call: CallbackQuery, session: AsyncSession, **_: object) 
         lines.append(f"<b>{html.escape(category.title)}</b>")
         for product in products:
             left = counts.get(product.id, 0)
+            if product.delivery_type == DeliveryType.MANUAL:
+                lines.append(
+                    f"🙋 {html.escape(product.title)} — по запросу · "
+                    f"{format_kop(product.price_kop)}"
+                )
+                total += 1
+                continue
             total += left
             mark = "🟢" if left > 3 else ("🟡" if left else "🔴")
             lines.append(

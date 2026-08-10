@@ -11,6 +11,7 @@ from aiogram.types import CallbackQuery, Message
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.config import Settings
+from bot.db.models import DeliveryType
 from bot.handlers.admin.common import guard
 from bot.keyboards import admin as admin_kb
 from bot.repo import audit as audit_repo
@@ -73,6 +74,7 @@ async def product_card(
         f"📦 <b>{html.escape(product.title)}</b>\n\n"
         f"Категория: {html.escape(category.title if category else '—')}\n"
         f"Цена: {format_kop(product.price_kop)}\n"
+        f"Выдача: {DeliveryType.TITLES.get(product.delivery_type, product.delivery_type)}\n"
         f"Порядок: {product.sort_order}\n"
         f"Статус: {'🟢 в продаже' if product.is_active else '🔴 снят'}\n"
         f"Картинка: {'есть' if (product.image_file_id or product.image_path) else 'нет'}\n\n"
@@ -87,20 +89,102 @@ async def product_card(
 
 
 @router.callback_query(F.data.startswith("a:prod_add:"))
-async def ask_title(
+async def ask_delivery_type(
     call: CallbackQuery, actor: Actor, state: FSMContext, **_: object
 ) -> None:
     if not await guard(call, actor, SECTION, "create"):
         return
     await call.answer()
     category_id = int(call.data.split(":")[2])
-    await state.set_state(ProductSG.title)
+    await state.set_state(ProductSG.delivery_type)
     await state.update_data(category_id=category_id)
+
+    lines = ["Шаг 1 из 5. <b>Как этот товар попадает к покупателю?</b>", ""]
+    for kind in DeliveryType.ALL:
+        lines.append(f"<b>{DeliveryType.TITLES[kind]}</b>\n{DeliveryType.HINTS[kind]}\n")
+    await show(call, "\n".join(lines), admin_kb.delivery_type_picker(category_id))
+
+
+@router.callback_query(F.data.startswith("a:prod_type:"), ProductSG.delivery_type)
+async def got_delivery_type(
+    call: CallbackQuery, actor: Actor, state: FSMContext, **_: object
+) -> None:
+    if not await guard(call, actor, SECTION, "create"):
+        return
+    parts = call.data.split(":")
+    category_id, kind = int(parts[2]), parts[3]
+    if kind not in DeliveryType.ALL:
+        await call.answer("Неизвестный тип выдачи", show_alert=True)
+        return
+
+    await call.answer()
+    await state.update_data(delivery_type=kind, category_id=category_id)
+    await state.set_state(ProductSG.title)
     await show(
         call,
-        "Шаг 1 из 4. Отправьте название товара:",
+        f"Тип: <b>{DeliveryType.TITLES[kind]}</b>\n\nШаг 2 из 5. Отправьте название товара:",
         admin_kb.confirm("noop", f"a:prods:{category_id}:0", yes_text="…"),
     )
+
+
+@router.callback_query(F.data.startswith("a:prod_type_edit:"))
+async def ask_change_type(
+    call: CallbackQuery, session: AsyncSession, actor: Actor, **_: object
+) -> None:
+    if not await guard(call, actor, SECTION, "act"):
+        return
+    await call.answer()
+    product_id = int(call.data.split(":")[2])
+    product = await catalog_repo.get_product(session, product_id)
+    if product is None:
+        await call.answer("Товар удалён", show_alert=True)
+        return
+
+    counts = await stock_repo.counts_by_status(session, product_id)
+    warning = ""
+    if counts["available"] or counts["reserved"]:
+        warning = (
+            f"\n\n⚠️ На складе {counts['available']} свободных и "
+            f"{counts['reserved']} зарезервированных позиций. При смене типа они "
+            "останутся на месте, но выдаваться будут по-новому — проверьте, что "
+            "содержимое подходит."
+        )
+    lines = [
+        f"🚚 Сейчас: <b>{DeliveryType.TITLES.get(product.delivery_type, product.delivery_type)}</b>",
+        "",
+    ]
+    for kind in DeliveryType.ALL:
+        lines.append(f"<b>{DeliveryType.TITLES[kind]}</b>\n{DeliveryType.HINTS[kind]}\n")
+    await show(call, "\n".join(lines) + warning, admin_kb.delivery_type_switch(product_id))
+
+
+@router.callback_query(F.data.startswith("a:prod_settype:"))
+async def change_type(
+    call: CallbackQuery, session: AsyncSession, actor: Actor, **_: object
+) -> None:
+    if not await guard(call, actor, SECTION, "act"):
+        return
+    parts = call.data.split(":")
+    product_id, kind = int(parts[2]), parts[3]
+    if kind not in DeliveryType.ALL:
+        await call.answer("Неизвестный тип выдачи", show_alert=True)
+        return
+    product = await catalog_repo.get_product(session, product_id)
+    if product is None:
+        await call.answer("Товар удалён", show_alert=True)
+        return
+
+    before = product.delivery_type
+    product.delivery_type = kind
+    await audit_repo.record(
+        session, actor.user_id, "product.delivery_type", "product", product_id,
+        {"before": before, "after": kind},
+    )
+    # Уже оформленные заказы не трогаем: в каждом лежит снимок типа, и они
+    # завершатся так, как были куплены.
+    await call.answer(f"Тип выдачи: {DeliveryType.TITLES[kind]}")
+    call.data = f"a:prod:{product_id}"
+    await product_card(call, session, actor)
 
 
 @router.message(ProductSG.title)
@@ -116,7 +200,7 @@ async def got_title(
         return
     await state.update_data(title=title)
     await state.set_state(ProductSG.description)
-    await message.answer("Шаг 2 из 4. Отправьте описание (или «-», чтобы пропустить):")
+    await message.answer("Шаг 3 из 5. Отправьте описание (или «-», чтобы пропустить):")
 
 
 @router.message(ProductSG.description)
@@ -129,7 +213,7 @@ async def got_description(
     raw = (message.text or "").strip()
     await state.update_data(description=None if raw == "-" else raw)
     await state.set_state(ProductSG.price)
-    await message.answer("Шаг 3 из 4. Отправьте цену в рублях (например 90 или 90,50):")
+    await message.answer("Шаг 4 из 5. Отправьте цену в рублях (например 90 или 90,50):")
 
 
 @router.message(ProductSG.price)
@@ -149,7 +233,7 @@ async def got_price(
         return
     await state.update_data(price_kop=price_kop)
     await state.set_state(ProductSG.image)
-    await message.answer("Шаг 4 из 4. Пришлите картинку товара или напишите «-», чтобы пропустить.")
+    await message.answer("Шаг 5 из 5. Пришлите картинку товара или напишите «-», чтобы пропустить.")
 
 
 @router.message(ProductSG.image)
@@ -178,15 +262,23 @@ async def got_image(
         price_kop=int(data["price_kop"]),
         image_path=image_path,
         image_file_id=image_file_id,
+        delivery_type=data.get("delivery_type", DeliveryType.TEXT),
     )
     await audit_repo.record(
         session, actor.user_id, "product.create", "product", product.id,
         {"title": product.title, "price_kop": product.price_kop},
     )
     await state.clear()
+    if product.delivery_type == DeliveryType.MANUAL:
+        tail = (
+            "Склад этому товару не нужен: после оплаты вам придёт уведомление "
+            "с контактом покупателя, а заказ будет ждать в разделе «Заказы»."
+        )
+    else:
+        tail = "Теперь залейте позиции на склад — без них товар не продаётся."
     await message.answer(
         f"✅ Товар «{html.escape(product.title)}» создан за {format_kop(product.price_kop)}.\n"
-        "Теперь залейте позиции на склад — без них товар не продаётся.",
+        f"Тип выдачи: {DeliveryType.TITLES[product.delivery_type]}\n\n{tail}",
         reply_markup=admin_kb.product_card(product),
     )
 

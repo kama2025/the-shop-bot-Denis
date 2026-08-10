@@ -39,18 +39,20 @@ class OrderStatus:
     PENDING = "pending"      # выставлен счёт, ждём оплату
     PAID = "paid"            # оплата подтверждена, товар ещё не отдан
     DELIVERED = "delivered"  # товар выдан
+    AWAITING = "awaiting"    # оплачен, ждёт ручной выдачи администратором
     CANCELED = "canceled"    # отменён пользователем или админом
     EXPIRED = "expired"      # истёк резерв
     REFUNDED = "refunded"    # деньги возвращены
 
     OPEN = (NEW, PENDING)
     FINAL = (DELIVERED, CANCELED, EXPIRED, REFUNDED)
-    ALL = (NEW, PENDING, PAID, DELIVERED, CANCELED, EXPIRED, REFUNDED)
+    ALL = (NEW, PENDING, PAID, AWAITING, DELIVERED, CANCELED, EXPIRED, REFUNDED)
 
     TITLES = {
         NEW: "🆕 Создан",
         PENDING: "⏳ Ждёт оплаты",
         PAID: "💰 Оплачен",
+        AWAITING: "🙋 Ждёт выдачи",
         DELIVERED: "✅ Выдан",
         CANCELED: "🚫 Отменён",
         EXPIRED: "⌛ Истёк",
@@ -68,6 +70,33 @@ class OrderKind:
 
     PURCHASE = "purchase"
     TOPUP = "topup"
+
+
+class DeliveryType:
+    """Как товар попадает к покупателю.
+
+    Задаётся при создании товара и определяет всё остальное: нужен ли склад,
+    что заливает администратор и что происходит сразу после оплаты.
+    """
+
+    TEXT = "text"      # позиция склада — текст: ссылка, ключ, логин с паролем
+    FILE = "file"      # позиция склада — файл: архив, документ, картинка
+    MANUAL = "manual"  # склада нет; после оплаты админ связывается с покупателем
+
+    ALL = (TEXT, FILE, MANUAL)
+    NEEDS_STOCK = (TEXT, FILE)
+
+    TITLES = {
+        TEXT: "📝 Текст со склада",
+        FILE: "📎 Файл со склада",
+        MANUAL: "🙋 Выдаёт администратор",
+    }
+
+    HINTS = {
+        TEXT: "Ссылки, ключи, логины с паролями. Заливаются пачкой, выдаются автоматически.",
+        FILE: "Архивы, документы, картинки. Заливаются по одному, выдаются автоматически.",
+        MANUAL: "Склад не нужен. После оплаты админам приходит уведомление с контактом покупателя.",
+    }
 
 
 class StockStatus:
@@ -199,6 +228,9 @@ class Product(Base):
     title: Mapped[str] = mapped_column(String(255), nullable=False)
     description: Mapped[str | None] = mapped_column(Text)
     price_kop: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    delivery_type: Mapped[str] = mapped_column(
+        String(16), default=DeliveryType.TEXT, server_default=DeliveryType.TEXT
+    )
     image_path: Mapped[str | None] = mapped_column(String(512))
     image_file_id: Mapped[str | None] = mapped_column(String(255))
     sort_order: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
@@ -246,7 +278,12 @@ class StockItem(Base):
     batch_id: Mapped[int | None] = mapped_column(
         ForeignKey("stock_batches.id", ondelete="SET NULL")
     )
+    # Для текстовых товаров здесь сама позиция, для файловых — подпись к файлу
+    # (может быть пустой), а сам файл лежит в file_id.
     content: Mapped[str] = mapped_column(Text, nullable=False)
+    file_id: Mapped[str | None] = mapped_column(String(255))
+    file_kind: Mapped[str | None] = mapped_column(String(16))  # document | photo | video
+    file_name: Mapped[str | None] = mapped_column(String(255))
     status: Mapped[str] = mapped_column(
         String(16), default=StockStatus.AVAILABLE, server_default=StockStatus.AVAILABLE
     )
@@ -283,6 +320,12 @@ class Order(Base):
     # Снимок названия на момент покупки: товар могут переименовать или удалить,
     # а в истории покупок и в отчёте должно остаться то, что человек купил.
     product_title: Mapped[str] = mapped_column(String(255), nullable=False)
+    # Снимок типа выдачи. Тип товара могут поменять после продажи, но заказ
+    # обязан завершиться так, как был оформлен, — иначе оплаченный «файл»
+    # внезапно станет ручной выдачей и повиснет.
+    delivery_type: Mapped[str] = mapped_column(
+        String(16), default=DeliveryType.TEXT, server_default=DeliveryType.TEXT
+    )
 
     qty: Mapped[int] = mapped_column(Integer, default=1, server_default="1")
     unit_price_kop: Mapped[int] = mapped_column(BigInteger, nullable=False)

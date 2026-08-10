@@ -13,10 +13,25 @@ from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.db.base import utcnow
-from bot.db.models import StockBatch, StockItem, StockStatus
+from bot.db.models import DeliveryType, Product, StockBatch, StockItem, StockStatus
+
+
+MANUAL_STOCK = 10**6
 
 
 async def available_count(session: AsyncSession, product_id: int) -> int:
+    """Сколько позиций можно продать прямо сейчас.
+
+    У товара с ручной выдачей склада нет, но продавать его можно всегда:
+    выдаёт администратор. Возвращать здесь ноль значит закрыть такой товар
+    для покупки — ровно та ошибка, которую видно только из жалоб.
+    """
+    kind = (
+        await session.execute(select(Product.delivery_type).where(Product.id == product_id))
+    ).scalar_one_or_none()
+    if kind == DeliveryType.MANUAL:
+        return MANUAL_STOCK
+
     stmt = select(func.count(StockItem.id)).where(
         StockItem.product_id == product_id, StockItem.status == StockStatus.AVAILABLE
     )

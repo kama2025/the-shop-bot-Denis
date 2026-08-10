@@ -10,15 +10,17 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from bot.db.models import OrderStatus
+from bot.db.models import DeliveryType, OrderStatus
 from bot.handlers.admin.common import guard
 from bot.keyboards import admin as admin_kb
 from bot.repo import audit as audit_repo
 from bot.repo import orders as orders_repo
 from bot.repo import users as users_repo
 from bot.services import delivery as delivery_service
+from bot.services import dispatch as dispatch_service
 from bot.services import refunds as refunds_service
 from bot.services.access import Actor
+from bot.services.texts import text_service
 from bot.states.admin import OrderSG
 from bot.utils.money import format_kop
 from bot.utils.render import show
@@ -99,6 +101,7 @@ async def _render_order(event, session: AsyncSession, order_id: int) -> None:
         )
     lines += [
         f"💰 Итого: <b>{format_kop(order.total_kop)}</b>",
+        f"🚚 Выдача: {DeliveryType.TITLES.get(order.delivery_type, order.delivery_type)}",
         f"💳 Оплата: {order.payment_method or '—'}",
         f"🔗 Транзакция: <code>{order.provider_txn_id or '—'}</code>",
         f"📌 Статус: {OrderStatus.TITLES.get(order.status, order.status)}",
@@ -112,8 +115,22 @@ async def _render_order(event, session: AsyncSession, order_id: int) -> None:
         lines.append(f"📝 Пометка: {html.escape(order.admin_note)}")
 
     can_refund = refunds_service.order_can_be_refunded(order)
-    can_replace = order.status == OrderStatus.DELIVERED and order.product_id is not None
-    await show(event, "\n".join(lines), admin_kb.order_card(order, can_refund, can_replace))
+    can_replace = (
+        order.status == OrderStatus.DELIVERED
+        and order.product_id is not None
+        and order.delivery_type in DeliveryType.NEEDS_STOCK
+    )
+    needs_manual = order.status == OrderStatus.AWAITING
+
+    if needs_manual:
+        lines.append("")
+        lines.append("🙋 <b>Заказ ждёт ручной выдачи.</b> Нажмите «Выдать вручную».")
+
+    await show(
+        event,
+        "\n".join(lines),
+        admin_kb.order_card(order, can_refund, can_replace, needs_manual),
+    )
 
 
 @router.callback_query(F.data.startswith("a:order_items:"))
@@ -124,10 +141,10 @@ async def order_items(
         return
     await call.answer()
     order_id = int(call.data.split(":")[2])
-    contents = await delivery_service.contents_of(session, order_id)
+    items = await delivery_service.items_of(session, order_id)
     text = (
         f"📄 <b>Что выдано по заказу #{order_id}</b>\n\n"
-        + delivery_service.format_contents(contents)
+        + delivery_service.format_items(items)
     )
     await show(call, text, admin_kb.confirm("noop", f"a:order:{order_id}", yes_text="…"))
 
@@ -351,9 +368,106 @@ async def do_block(
     await message.answer(f"🚫 Покупатель <code>{order.user_id}</code> заблокирован.")
 
 
-async def _tell_buyer(bot: Bot, user_id: int, text: str) -> None:
-    """Сообщение покупателю; недоставка не должна ломать операцию админа."""
+async def _tell_buyer(bot: Bot, user_id: int, text: str) -> bool:
+    """Сообщение покупателю. Недоставка не ломает операцию админа, но видна ему."""
     try:
         await bot.send_message(user_id, text)
+        return True
     except TelegramAPIError:
-        pass
+        return False
+
+
+# --- ручная выдача -----------------------------------------------------------
+
+
+@router.callback_query(F.data.startswith("a:order_manual:"))
+async def ask_manual(
+    call: CallbackQuery, session: AsyncSession, actor: Actor, state: FSMContext, **_: object
+) -> None:
+    if not await guard(call, actor, SECTION, "act"):
+        return
+    await call.answer()
+    order_id = int(call.data.split(":")[2])
+    order = await orders_repo.get(session, order_id)
+    if order is None:
+        await call.answer("Заказ не найден", show_alert=True)
+        return
+    if order.status != OrderStatus.AWAITING:
+        await call.answer("Этот заказ не ждёт ручной выдачи", show_alert=True)
+        return
+
+    buyer = await users_repo.get_user(session, order.user_id)
+    contact = f"@{buyer.username}" if buyer and buyer.username else "без username"
+
+    await state.set_state(OrderSG.manual_payload)
+    await state.update_data(order_id=order_id)
+    await show(
+        call,
+        f"🙋 <b>Ручная выдача по заказу #{order_id}</b>\n\n"
+        f"📦 {html.escape(order.product_title)} × {order.qty}\n"
+        f"👤 {html.escape(contact)} (<code>{order.user_id}</code>)\n\n"
+        "Пришлите то, что нужно отправить покупателю: текст, файл, картинку "
+        "или видео. Бот перешлёт это ему и закроет заказ.\n\n"
+        "Отправленное сохранится в истории заказа — потом будет видно, что "
+        "именно выдали.",
+        admin_kb.confirm("noop", f"a:order:{order_id}", yes_text="…"),
+    )
+
+
+@router.message(OrderSG.manual_payload)
+async def do_manual(
+    message: Message,
+    session: AsyncSession,
+    actor: Actor,
+    state: FSMContext,
+    bot: Bot,
+    **_: object,
+) -> None:
+    if not await guard(message, actor, SECTION, "act"):
+        await state.clear()
+        return
+
+    data = await state.get_data()
+    order_id = int(data["order_id"])
+    order = await orders_repo.get_for_update(session, order_id)
+    if order is None:
+        await message.answer("Заказ не найден.")
+        await state.clear()
+        return
+
+    item = dispatch_service.extract_file(message)
+    if item is None:
+        text = (message.html_text or "").strip() if message.text else ""
+        if not text:
+            await message.answer("Пришлите текст или файл — пустое отправлять нечего.")
+            return
+        item = delivery_service.DeliveredItem(content=text)
+
+    result = await delivery_service.complete_manual(session, order, actor.user_id, item)
+    if not result.ok:
+        await message.answer("Не вышло закрыть заказ — проверьте его статус.")
+        await state.clear()
+        return
+    if result.already_delivered:
+        await message.answer("Заказ уже был выдан раньше — ничего не отправлял.")
+        await state.clear()
+        return
+
+    body = await text_service.get(
+        session,
+        "delivery_manual_done",
+        order_id=order.id,
+        title=html.escape(order.product_title),
+        items=delivery_service.format_items(result.items),
+    )
+    delivered = await _tell_buyer(bot, order.user_id, body)
+    await dispatch_service.send_items(bot, order.user_id, result.items)
+
+    await audit_repo.record(
+        session, actor.user_id, "order.manual_delivery", "order", order_id,
+        {"is_file": item.is_file},
+    )
+    await state.clear()
+
+    note = "" if delivered else "\n\n⚠️ Покупателю доставить не удалось — возможно, он заблокировал бота."
+    await message.answer(f"✅ Заказ #{order_id} выдан и закрыт.{note}")

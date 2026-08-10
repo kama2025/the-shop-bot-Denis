@@ -25,7 +25,7 @@ from dataclasses import dataclass, field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.db.base import utcnow
-from bot.db.models import BalanceTxnKind, Order, OrderKind, OrderStatus
+from bot.db.models import BalanceTxnKind, DeliveryType, Order, OrderKind, OrderStatus
 from bot.logger import payment_log
 from bot.payments.base import PayStatus, ProviderError
 from bot.payments.registry import PaymentRegistry
@@ -38,6 +38,7 @@ from bot.services import promo as promo_service
 class Outcome:
     DELIVERED = "delivered"          # оплачено и выдано только что
     ALREADY = "already"              # было выдано раньше
+    AWAITING = "awaiting"            # оплачено, выдаёт администратор вручную
     TOPPED_UP = "topped_up"          # баланс пополнен
     PENDING = "pending"              # оплата ещё не пришла
     FAILED = "failed"                # провайдер сказал «отменено»
@@ -53,6 +54,7 @@ class ConfirmResult:
     outcome: str
     order: Order | None = None
     contents: list[str] = field(default_factory=list)
+    items: list = field(default_factory=list)
     detail: str | None = None
 
     @property
@@ -143,6 +145,10 @@ async def confirm_order(
     if order.status == OrderStatus.DELIVERED:
         contents = await delivery_service.contents_of(session, order.id)
         return ConfirmResult(Outcome.ALREADY, order=order, contents=contents)
+    if order.status == OrderStatus.AWAITING:
+        # Оплата уже принята, заказ ждёт администратора. Повторная проверка не
+        # должна ни перепроводить платёж, ни трогать статус.
+        return ConfirmResult(Outcome.AWAITING, order=order)
     if order.status in (OrderStatus.CANCELED, OrderStatus.EXPIRED, OrderStatus.REFUNDED):
         return ConfirmResult(Outcome.CLOSED, order=order)
 
@@ -289,12 +295,15 @@ async def _finalize(session: AsyncSession, order: Order, source: str) -> Confirm
     result = await delivery_service.deliver(session, order)
     if result.shortage:
         return ConfirmResult(Outcome.SHORTAGE, order=order)
+    if result.manual:
+        return ConfirmResult(Outcome.AWAITING, order=order)
     if not result.ok:
         return ConfirmResult(Outcome.PENDING, order=order)
     return ConfirmResult(
         Outcome.ALREADY if result.already_delivered else Outcome.DELIVERED,
         order=order,
         contents=result.contents,
+        items=result.items,
     )
 
 
@@ -313,6 +322,8 @@ async def pay_with_balance(session: AsyncSession, order_id: int) -> ConfirmResul
     if order.status == OrderStatus.DELIVERED:
         contents = await delivery_service.contents_of(session, order.id)
         return ConfirmResult(Outcome.ALREADY, order=order, contents=contents)
+    if order.status == OrderStatus.AWAITING:
+        return ConfirmResult(Outcome.AWAITING, order=order)
     if order.status not in OrderStatus.OPEN:
         return ConfirmResult(Outcome.CLOSED, order=order)
     if order.kind == OrderKind.TOPUP:

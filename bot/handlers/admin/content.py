@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import html
+import logging
 
 from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
@@ -251,23 +252,67 @@ async def ask_channel(call: CallbackQuery, actor: Actor, state: FSMContext, **_:
     await state.set_state(ChannelSG.chat_ref)
     await show(
         call,
-        "Шаг 1 из 3. Отправьте <code>@username</code> канала или его числовой ID "
-        "(для приватных, вида <code>-1001234567890</code>).\n\n"
-        "Бот уже должен быть администратором этого канала.",
+        "📡 <b>Добавление канала</b>\n\n"
+        "Пришлите канал любым из способов:\n"
+        "• ссылкой — <code>https://t.me/название</code>\n"
+        "• именем — <code>@название</code>\n"
+        "• числовым ID — <code>-1001234567890</code>\n"
+        "• <b>перешлите сюда любой пост из канала</b> — самый надёжный способ "
+        "для приватных каналов\n\n"
+        "⚠️ Бот должен быть добавлен в канал <b>администратором</b>. Без этого "
+        "Telegram не даст проверять подписку — это его ограничение, не бота.",
         admin_kb.confirm("noop", "a:channels", yes_text="…"),
     )
 
 
+def _parse_channel_ref(message: Message) -> str | None:
+    """Достаёт ссылку на канал из сообщения администратора.
+
+    Понимает пересланный пост, ссылку, @имя и числовой ID. Разбор вынесен в
+    отдельную функцию, потому что вариантов много и каждый проверяется тестом.
+    """
+    origin = getattr(message, "forward_from_chat", None)
+    if origin is not None and getattr(origin, "id", None):
+        return str(origin.id)
+
+    raw = (message.text or message.caption or "").strip()
+    if not raw:
+        return None
+
+    for prefix in ("https://t.me/", "http://t.me/", "https://telegram.me/", "t.me/"):
+        if raw.startswith(prefix):
+            tail = raw[len(prefix) :].split("/")[0].split("?")[0].strip()
+            # Приватная ссылка вида t.me/+AbCd или t.me/joinchat/... не содержит
+            # имени канала — по ней getChatMember работать не будет.
+            if not tail or tail.startswith("+") or tail == "joinchat":
+                return None
+            return f"@{tail}"
+
+    if raw.startswith("@"):
+        return raw
+    if raw.lstrip("-").isdigit():
+        return raw
+    if raw.replace("_", "").isalnum():
+        return f"@{raw}"
+    return None
+
+
 @router.message(ChannelSG.chat_ref)
 async def got_chat_ref(
-    message: Message, actor: Actor, state: FSMContext, **_: object
+    message: Message, session: AsyncSession, actor: Actor, state: FSMContext, **_: object
 ) -> None:
     if not await guard(message, actor, "channels", "create"):
         await state.clear()
         return
-    chat_ref = (message.text or "").strip()
-    if not chat_ref:
-        await message.answer("Пусто. Отправьте @username или числовой ID.")
+
+    chat_ref = _parse_channel_ref(message)
+    if chat_ref is None:
+        await message.answer(
+            "Не понял, какой это канал.\n\n"
+            "Пригласительная ссылка вида <code>t.me/+AbCdEf</code> не подойдёт — "
+            "по ней Telegram не даёт проверять подписку. Для приватного канала "
+            "<b>перешлите сюда любой пост</b> из него."
+        )
         return
 
     # Проверяем доступность сразу: канал, добавленный «вслепую», обнаружится
@@ -277,16 +322,46 @@ async def got_chat_ref(
     except Exception as exc:  # noqa: BLE001
         await message.answer(
             f"Не могу открыть этот канал: {html.escape(str(exc)[:200])}\n\n"
-            "Проверьте, что бот добавлен администратором, и пришлите ссылку ещё раз."
+            "Обычно причина одна: бот не добавлен в канал администратором. "
+            "Добавьте и пришлите ещё раз."
         )
         return
 
-    await state.update_data(chat_ref=chat_ref, title=chat.title or chat_ref)
+    # Отдельно убеждаемся, что бот именно администратор. `get_chat` проходит и
+    # для публичного канала, где бота нет вовсе, — а `getChatMember` по чужим
+    # пользователям в таком канале работать не будет.
+    try:
+        me = await message.bot.get_me()
+        membership = await message.bot.get_chat_member(chat.id, me.id)
+        is_admin = getattr(membership, "status", "") in ("administrator", "creator")
+    except Exception as exc:  # noqa: BLE001
+        is_admin = False
+        logging.getLogger(__name__).warning("Не проверили права бота в канале: %s", exc)
+
+    if not is_admin:
+        await message.answer(
+            f"Канал <b>{html.escape(chat.title or chat_ref)}</b> найден, но бот в нём "
+            "<b>не администратор</b>.\n\n"
+            "Проверка подписки без прав администратора невозможна. Откройте канал → "
+            "Управление → Администраторы → добавьте бота и пришлите канал ещё раз."
+        )
+        return
+
+    username = getattr(chat, "username", None)
+    stored_ref = f"@{username}" if username else str(chat.id)
+    await state.update_data(chat_ref=stored_ref, title=chat.title or stored_ref)
+
+    if username:
+        # Публичный канал: ссылку можно собрать самим, лишний шаг ни к чему.
+        await state.set_state(None)
+        await _save_channel(message, session, actor, state, f"https://t.me/{username}")
+        return
+
     await state.set_state(ChannelSG.invite_url)
     await message.answer(
-        f"Канал найден: <b>{html.escape(chat.title or chat_ref)}</b>\n\n"
-        "Шаг 2 из 3. Отправьте ссылку для кнопки «Подписаться» "
-        "(<code>https://t.me/...</code>)."
+        f"Канал найден: <b>{html.escape(chat.title or stored_ref)}</b>, бот — администратор ✅\n\n"
+        "Канал приватный, поэтому пришлите <b>пригласительную ссылку</b> для кнопки "
+        "«Подписаться» — её видно в настройках канала (Пригласительные ссылки)."
     )
 
 
@@ -301,14 +376,36 @@ async def got_invite(
     if not url.startswith(("https://t.me/", "http://t.me/", "https://telegram.me/")):
         await message.answer("Ссылка должна начинаться с https://t.me/")
         return
+    await _save_channel(message, session, actor, state, url)
 
+
+async def _save_channel(
+    message: Message,
+    session: AsyncSession,
+    actor: Actor,
+    state: FSMContext,
+    invite_url: str,
+) -> None:
     data = await state.get_data()
-    channel = await content_repo.add_channel(session, data["chat_ref"], data["title"], url)
+    channel = await content_repo.add_channel(
+        session, data["chat_ref"], data["title"], invite_url
+    )
     await audit_repo.record(
-        session, actor.user_id, "channel.add", "channel", channel.id, {"chat_ref": channel.chat_ref}
+        session, actor.user_id, "channel.add", "channel", channel.id,
+        {"chat_ref": channel.chat_ref},
     )
     await state.clear()
-    await message.answer(f"✅ Канал «{html.escape(channel.title)}» добавлен в проверку подписки.")
+
+    channels = await content_repo.list_channels(session, only_active=True)
+    await message.answer(
+        f"✅ Канал «{html.escape(channel.title)}» добавлен в проверку подписки.\n\n"
+        f"Теперь при первом запуске бот требует подписку на "
+        f"{len(channels)} канал(ов). Проверьте с другого аккаунта: /start должен "
+        "показать кнопку «Подписаться».",
+        reply_markup=admin_kb.channels(
+            await content_repo.list_channels(session, only_active=False)
+        ),
+    )
 
 
 @router.callback_query(F.data.startswith("a:ch_toggle:"))

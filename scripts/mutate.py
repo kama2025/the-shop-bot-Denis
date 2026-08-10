@@ -156,6 +156,26 @@ MUTATIONS: list[Mutation] = [
         guards="неподписанный не попадает в магазин",
     ),
     Mutation(
+        name="manual-awaits-admin",
+        path="bot/services/delivery.py",
+        anchor="    if order.delivery_type == DeliveryType.MANUAL:\n"
+        "        return await _await_manual(session, order)",
+        replacement="    if False:  # МУТАЦИЯ\n"
+        "        return await _await_manual(session, order)",
+        tests=["tests/test_delivery_types_db.py"],
+        breaks="товар с ручной выдачей перестал попадать в очередь к админу",
+        guards="оплаченный заказ с ручной выдачей ждёт администратора, а не считается выданным",
+    ),
+    Mutation(
+        name="manual-always-available",
+        path="bot/repo/stock.py",
+        anchor="    if kind == DeliveryType.MANUAL:\n        return MANUAL_STOCK",
+        replacement="    if False:  # МУТАЦИЯ\n        return MANUAL_STOCK",
+        tests=["tests/test_delivery_types_db.py::test_manual_product_is_always_buyable"],
+        breaks="товар с ручной выдачей стал «нет в наличии»",
+        guards="товар без склада всё равно можно купить",
+    ),
+    Mutation(
         name="button-style-guard",
         path="bot/keyboards/theme.py",
         anchor="SECONDARY = DEFAULT",

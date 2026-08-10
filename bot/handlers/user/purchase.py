@@ -17,13 +17,14 @@ from bot.payments.base import ProviderError
 from bot.payments.registry import PaymentRegistry
 from bot.repo import catalog as catalog_repo
 from bot.repo import orders as orders_repo
+from bot.repo import users as users_repo
 from bot.services import delivery as delivery_service
 from bot.services import header as header_service
 from bot.services import notify as notify_service
 from bot.services import orders as orders_service
 from bot.services import payments as payments_service
+from bot.services import dispatch as dispatch_service
 from bot.services import promo as promo_service
-from bot.services import stats as stats_service
 from bot.services.settings_store import settings_store
 from bot.services.texts import text_service
 from bot.utils.money import format_kop
@@ -242,17 +243,34 @@ async def _present_result(
     order = result.order
 
     if outcome in (payments_service.Outcome.DELIVERED, payments_service.Outcome.ALREADY):
+        items = result.items or await delivery_service.items_of(session, order.id)
         text = await text_service.get(
             session,
             "delivery",
             order_id=order.id,
             title=html.escape(order.product_title),
             qty=order.qty,
-            items=delivery_service.format_contents(result.contents),
+            items=delivery_service.format_items(items),
         )
         await show(call, text, user_kb.simple_back())
+        # Файлы уходят отдельными сообщениями: в подпись к экрану их не вложить.
+        await dispatch_service.send_items(bot, order.user_id, items)
         if outcome == payments_service.Outcome.DELIVERED:
             await _after_sale(bot, session, order)
+        return
+
+    if outcome == payments_service.Outcome.AWAITING:
+        support = await settings_store.get(session, "support_contact") or "@support"
+        text = await text_service.get(
+            session,
+            "delivery_manual",
+            order_id=order.id,
+            title=html.escape(order.product_title),
+            qty=order.qty,
+            support=support,
+        )
+        await show(call, text, user_kb.simple_back())
+        await _notify_manual(bot, session, order)
         return
 
     if outcome == payments_service.Outcome.TOPPED_UP:
@@ -312,6 +330,29 @@ async def _present_result(
         return
 
     await call.answer(await text_service.get(session, "payment_not_confirmed"), show_alert=True)
+
+
+async def _notify_manual(bot: Bot, session: AsyncSession, order) -> None:
+    """Зовёт администраторов на ручную выдачу.
+
+    Уведомление отправляется один раз — при переводе заказа в ожидание.
+    Повторная проверка оплаты в этот путь уже не заходит.
+    """
+    if order.status != OrderStatus.AWAITING:
+        return
+    buyer = await users_repo.get_user(session, order.user_id)
+    contact = f"@{buyer.username}" if buyer and buyer.username else "без username"
+    await notify_service.notify_admins(
+        bot,
+        session,
+        f"🙋 <b>Заказ #{order.id} ждёт ручной выдачи</b>\n\n"
+        f"📦 {html.escape(order.product_title)} × {order.qty}\n"
+        f"💰 {format_kop(order.total_kop)}\n"
+        f"👤 Покупатель: {html.escape(contact)} "
+        f"(<code>{order.user_id}</code>)\n\n"
+        f"Свяжитесь с покупателем и закройте заказ кнопкой «Выдать вручную» "
+        f"в карточке заказа.",
+    )
 
 
 async def _after_sale(bot: Bot, session: AsyncSession, order) -> None:

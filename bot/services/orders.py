@@ -13,7 +13,7 @@ from datetime import timedelta
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.db.base import utcnow
-from bot.db.models import Order, OrderStatus, Product, PromoCode
+from bot.db.models import DeliveryType, Order, OrderStatus, Product, PromoCode
 from bot.repo import orders as orders_repo
 from bot.repo import stock as stock_repo
 from bot.utils.money import apply_discount
@@ -84,9 +84,13 @@ async def create_order(
     if qty < 1 or qty > max_qty:
         raise BadQuantity(max_qty)
 
-    available = await stock_repo.available_count(session, product.id)
-    if available < qty:
-        raise OutOfStock(available)
+    # Товар с ручной выдачей склада не имеет: выдаёт администратор, а не бот.
+    # Проверять и резервировать нечего.
+    needs_stock = product.delivery_type in DeliveryType.NEEDS_STOCK
+    if needs_stock:
+        available = await stock_repo.available_count(session, product.id)
+        if available < qty:
+            raise OutOfStock(available)
 
     calc = quote(product, qty, promo)
     expires_at = utcnow() + timedelta(minutes=reserve_minutes)
@@ -95,6 +99,7 @@ async def create_order(
         user_id=user_id,
         product_id=product.id,
         product_title=product.title,
+        delivery_type=product.delivery_type,
         qty=qty,
         unit_price_kop=calc.unit_price_kop,
         subtotal_kop=calc.subtotal_kop,
@@ -107,6 +112,9 @@ async def create_order(
     )
     session.add(order)
     await session.flush()
+
+    if not needs_stock:
+        return order
 
     reserved = await stock_repo.reserve_items(
         session, product.id, qty, order.id, expires_at

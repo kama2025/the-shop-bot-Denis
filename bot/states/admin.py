@@ -11,6 +11,7 @@ class CategorySG(StatesGroup):
 
 
 class ProductSG(StatesGroup):
+    delivery_type = State()
     title = State()
     description = State()
     price = State()
@@ -23,12 +24,14 @@ class ProductSG(StatesGroup):
 
 class StockSG(StatesGroup):
     items = State()
+    files = State()
     confirm = State()
     reject_reason = State()
 
 
 class OrderSG(StatesGroup):
     search = State()
+    manual_payload = State()
     refund_comment = State()
     replace_reason = State()
     block_reason = State()

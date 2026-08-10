@@ -47,7 +47,7 @@ async def refund_to_balance(
         return RefundResult(False, detail="Заказ не найден")
     if order.status == OrderStatus.REFUNDED:
         return RefundResult(False, detail="Возврат по этому заказу уже сделан")
-    if order.status not in (OrderStatus.PAID, OrderStatus.DELIVERED):
+    if order.status not in (OrderStatus.PAID, OrderStatus.AWAITING, OrderStatus.DELIVERED):
         return RefundResult(False, detail="Возврат возможен только по оплаченному заказу")
 
     await balance_repo.move(
@@ -164,4 +164,9 @@ async def reject_batch(
 
 
 def order_can_be_refunded(order: Order) -> bool:
-    return order.status in (OrderStatus.PAID, OrderStatus.DELIVERED)
+    """Деньги можно вернуть, пока они у нас.
+
+    Заказ, ждущий ручной выдачи, тоже оплачен: если договориться не вышло,
+    правильный выход — вернуть деньги, а не оставлять человека ни с чем.
+    """
+    return order.status in (OrderStatus.PAID, OrderStatus.AWAITING, OrderStatus.DELIVERED)

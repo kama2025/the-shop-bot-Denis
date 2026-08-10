@@ -7,6 +7,7 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from bot.db.models import (
     Admin,
     AdminRole,
+    DeliveryType,
     Broadcast,
     Category,
     Channel,
@@ -137,17 +138,22 @@ def category_card(category: Category, products_count: int) -> InlineKeyboardMark
 def products(
     items: list[Product], stock: dict[int, int], category_id: int, page: int, pages: int
 ) -> InlineKeyboardMarkup:
-    rows = [
-        [
-            btn(
-                f"{toggle_mark(product.is_active)} {product.title} · "
-                f"{format_kop(product.price_kop)} · {stock.get(product.id, 0)} шт",
-                callback_data=f"a:prod:{product.id}",
-                style=SECONDARY,
-            )
-        ]
-        for product in items
-    ]
+    rows = []
+    for product in items:
+        if product.delivery_type == DeliveryType.MANUAL:
+            left = "вручную"
+        else:
+            left = f"{stock.get(product.id, 0)} шт"
+        rows.append(
+            [
+                btn(
+                    f"{toggle_mark(product.is_active)} {product.title} · "
+                    f"{format_kop(product.price_kop)} · {left}",
+                    callback_data=f"a:prod:{product.id}",
+                    style=SECONDARY,
+                )
+            ]
+        )
     rows.append(pager_row(f"a:prods:{category_id}:", page, pages))
     rows.append(
         [btn(f"{ICON['add']} Новый товар", callback_data=f"a:prod_add:{category_id}", style=SUCCESS)]
@@ -172,6 +178,9 @@ def product_card(product: Product) -> InlineKeyboardMarkup:
                 btn("📂 Сменить категорию", callback_data=f"a:prod_cat:{product.id}", style=SECONDARY),
             ],
             [
+                btn("🚚 Тип выдачи", callback_data=f"a:prod_type_edit:{product.id}", style=SECONDARY),
+            ],
+            [
                 btn(f"{ICON['up']} Выше", callback_data=f"a:prod_move:{product.id}:-1", style=SECONDARY),
                 btn(f"{ICON['down']} Ниже", callback_data=f"a:prod_move:{product.id}:1", style=SECONDARY),
             ],
@@ -186,6 +195,41 @@ def product_card(product: Product) -> InlineKeyboardMarkup:
             back_row(f"a:prods:{product.category_id}:0"),
         ]
     )
+
+
+def delivery_type_picker(category_id: int) -> InlineKeyboardMarkup:
+    """Выбор типа выдачи — первый шаг создания товара.
+
+    Тип определяет всё дальнейшее: нужен ли склад, что заливает админ и что
+    происходит после оплаты. Спрашивать его в конце значит переспрашивать.
+    """
+    rows = [
+        [
+            btn(
+                DeliveryType.TITLES[kind],
+                callback_data=f"a:prod_type:{category_id}:{kind}",
+                style=SUCCESS,
+            )
+        ]
+        for kind in DeliveryType.ALL
+    ]
+    rows.append(back_row(f"a:prods:{category_id}:0"))
+    return _kb(rows)
+
+
+def delivery_type_switch(product_id: int) -> InlineKeyboardMarkup:
+    rows = [
+        [
+            btn(
+                DeliveryType.TITLES[kind],
+                callback_data=f"a:prod_settype:{product_id}:{kind}",
+                style=SUCCESS,
+            )
+        ]
+        for kind in DeliveryType.ALL
+    ]
+    rows.append(back_row(f"a:prod:{product_id}"))
+    return _kb(rows)
 
 
 def category_picker(items: list[Category], product_id: int) -> InlineKeyboardMarkup:
@@ -275,8 +319,20 @@ def orders(items: list[Order], page: int, pages: int, status: str | None) -> Inl
     return _kb(rows)
 
 
-def order_card(order: Order, can_refund: bool, can_replace: bool) -> InlineKeyboardMarkup:
+def order_card(
+    order: Order, can_refund: bool, can_replace: bool, needs_manual: bool = False
+) -> InlineKeyboardMarkup:
     rows: list[list[InlineKeyboardButton]] = []
+    if needs_manual:
+        rows.append(
+            [
+                btn(
+                    "🙋 Выдать вручную",
+                    callback_data=f"a:order_manual:{order.id}",
+                    style=SUCCESS,
+                )
+            ]
+        )
     if can_replace:
         rows.append(
             [btn(f"{ICON['replace']} Заменить товар", callback_data=f"a:order_replace:{order.id}", style=SUCCESS)]

@@ -21,6 +21,7 @@ from bot.db.session import session_scope
 from bot.payments import poller
 from bot.payments.registry import PaymentRegistry
 from bot.services import delivery as delivery_service
+from bot.services import dispatch as dispatch_service
 from bot.services import orders as orders_service
 from bot.services import payments as payments_service
 from bot.services.texts import text_service
@@ -69,10 +70,11 @@ async def poll_payments(
                 order_id=result.order.id,
                 title=result.order.product_title,
                 qty=result.order.qty,
-                items=delivery_service.format_contents(result.contents),
+                items=delivery_service.format_items(result.items),
             )
         try:
             await bot.send_message(result.order.user_id, text)
+            await dispatch_service.send_items(bot, result.order.user_id, result.items)
         except TelegramAPIError as exc:
             log.warning("Не доставили товар в чат: %s", exc)
 

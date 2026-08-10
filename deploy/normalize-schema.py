@@ -12,11 +12,20 @@
   устройства схемы;
 * выбрасывается служебная таблица `alembic_version` — её ведёт сам Alembic,
   в моделях её нет;
-* внутри `CREATE TABLE` **порядок колонок сохраняется** (он значим), а строки
-  ключей и ограничений сортируются.
+* внутри `CREATE TABLE` строки тела сортируются, а завершающие запятые
+  снимаются.
 
-Порядок колонок намеренно не трогаем: переставленная колонка — настоящее
-расхождение схем, и прятать его канонизацией нельзя.
+Почему сортируются и колонки тоже. `ALTER TABLE ... ADD COLUMN` дописывает
+колонку в конец таблицы, а `metadata.create_all` ставит её туда, где она
+объявлена в модели. Физический порядок колонок в MySQL не влияет ни на что,
+пока к ним обращаются по имени, — а SQLAlchemy всегда обращается по имени.
+Сравнивать порядок значит получать красный гейт на каждой второй миграции;
+красный без причины гейт перестают читать.
+
+Что при этом **не** теряется: состав колонок, их типы, NULL/NOT NULL,
+умолчания, коллации, индексы и внешние ключи. Переименованная, потерянная или
+изменённая колонка по-прежнему видна в сравнении — меняется только строка,
+а не её место.
 
 Использование:
     normalize-schema.py < dump.sql > canonical.sql
@@ -29,21 +38,20 @@ import sys
 
 AUTO_INCREMENT = re.compile(r" AUTO_INCREMENT=\d+")
 DIRECTIVE = re.compile(r"^/\*!.*\*/;?$")
-KEY_LINE = re.compile(r"^\s+(PRIMARY KEY|UNIQUE KEY|KEY|CONSTRAINT|FULLTEXT KEY)\b")
 
 
 def canonical(lines: list[str]) -> list[str]:
     out: list[str] = []
-    columns: list[str] = []
-    keys: list[str] = []
+    body: list[str] = []
     inside = False
     skipping = False
 
     def flush() -> None:
-        out.extend(columns)
-        out.extend(sorted(keys))
-        columns.clear()
-        keys.clear()
+        # Запятые снимаются до сортировки. Иначе строка, стоявшая последней и
+        # потому без запятой, после сортировки оказывается в середине — и две
+        # одинаковые схемы расходятся на пустом месте.
+        out.extend(sorted(line.rstrip(",") for line in body))
+        body.clear()
 
     for raw in lines:
         line = raw.rstrip("\n")
@@ -70,15 +78,12 @@ def canonical(lines: list[str]) -> list[str]:
 
         if inside and line.startswith(")"):
             flush()
-            # Последняя строка тела заканчивается запятой, которой быть не должно.
-            if out and out[-1].endswith(","):
-                out[-1] = out[-1][:-1]
             out.append(line)
             inside = False
             continue
 
         if inside:
-            (keys if KEY_LINE.match(line) else columns).append(line)
+            body.append(line)
             continue
 
         out.append(line)
