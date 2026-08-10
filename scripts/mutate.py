@@ -64,9 +64,13 @@ MUTATIONS: list[Mutation] = [
         name="delivery-idempotency",
         path="bot/services/delivery.py",
         anchor="    if order.status == OrderStatus.DELIVERED:\n"
-        "        contents = await _delivered_contents(session, order.id)",
+        "        return DeliveryResult(\n"
+        "            ok=True, items=await items_of(session, order.id), already_delivered=True\n"
+        "        )",
         replacement="    if False:  # МУТАЦИЯ\n"
-        "        contents = await _delivered_contents(session, order.id)",
+        "        return DeliveryResult(\n"
+        "            ok=True, items=await items_of(session, order.id), already_delivered=True\n"
+        "        )",
         tests=[
             "tests/test_orders_db.py::test_delivery_is_idempotent",
             "tests/test_payments_db.py::test_confirmed_delivers_once",
