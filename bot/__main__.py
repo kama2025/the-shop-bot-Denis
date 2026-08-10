@@ -30,6 +30,7 @@ from bot.middlewares.throttle import ThrottleMiddleware
 from bot.payments.registry import PaymentRegistry
 from bot.repo import users as users_repo
 from bot.scheduler import jobs
+from bot.services import commands as commands_service
 from bot.services import settings_store as settings_module
 from bot.services import texts as texts_module
 from bot.services.subscription import SubscriptionService
@@ -163,6 +164,11 @@ async def main() -> int:
         )
         await _shutdown(scheduler, None, registry, redis, bot, engine)
         return 5
+
+    # Меню команд: `/admin` виден только администраторам, остальным — нет.
+    async with session_scope(session_factory) as session:
+        admins = await commands_service.sync(bot, session)
+    log.info("Меню команд обновлено: админов с доступом к /admin — %s", admins)
 
     log.info("Бот запущен: @%s (id %s)", me.username, me.id)
     scheduler.start()

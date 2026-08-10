@@ -5,7 +5,7 @@ from __future__ import annotations
 import html
 from datetime import timedelta
 
-from aiogram import F, Router
+from aiogram import Bot, F, Router
 from aiogram.fsm.context import FSMContext
 from aiogram.types import BufferedInputFile, CallbackQuery, Message
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -19,6 +19,7 @@ from bot.repo import audit as audit_repo
 from bot.repo import balance as balance_repo
 from bot.repo import orders as orders_repo
 from bot.repo import users as users_repo
+from bot.services import commands as commands_service
 from bot.services import export as export_service
 from bot.services import stats as stats_service
 from bot.services.access import Actor
@@ -320,7 +321,12 @@ async def ask_admin(call: CallbackQuery, actor: Actor, state: FSMContext, **_: o
 
 @router.message(AdminSG.add_id)
 async def add_admin(
-    message: Message, session: AsyncSession, actor: Actor, state: FSMContext, **_: object
+    message: Message,
+    session: AsyncSession,
+    actor: Actor,
+    state: FSMContext,
+    bot: Bot,
+    **_: object,
 ) -> None:
     if not await guard(message, actor, "admins", "create"):
         await state.clear()
@@ -339,16 +345,29 @@ async def add_admin(
 
     await users_repo.add_admin(session, user_id, AdminRole.ADMIN, actor.user_id)
     await audit_repo.record(session, actor.user_id, "admin.add", "user", user_id)
+    shown = await commands_service.grant(bot, user_id)
     await state.clear()
+
+    tail = (
+        "" if shown
+        else "\n\n⚠️ Команда /admin появится у него в меню после того, как он "
+        "отправит боту /start."
+    )
     await message.answer(
         f"✅ <code>{user_id}</code> назначен администратором.\n"
         "Доступ: товары, категории, склад, заказы, рассылки, статистика, пользователи."
+        + tail
     )
 
 
 @router.callback_query(F.data.startswith("a:admin_del:"))
 async def remove_admin(
-    call: CallbackQuery, session: AsyncSession, actor: Actor, settings: Settings, **_: object
+    call: CallbackQuery,
+    session: AsyncSession,
+    actor: Actor,
+    settings: Settings,
+    bot: Bot,
+    **_: object,
 ) -> None:
     if not await guard(call, actor, "admins", "act"):
         return
@@ -362,5 +381,7 @@ async def remove_admin(
 
     await users_repo.remove_admin(session, user_id)
     await audit_repo.record(session, actor.user_id, "admin.remove", "user", user_id)
+    # Меню снимаем сразу: иначе `/admin` останется у него до перезапуска Telegram.
+    await commands_service.revoke(bot, user_id)
     await call.answer("Администратор снят")
     await list_admins(call, session, actor, settings)
