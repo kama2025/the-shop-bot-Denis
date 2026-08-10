@@ -66,8 +66,11 @@ docker compose -f docker-compose.dev.yml up -d      # MySQL на 3307, Redis н�
 
 cp .env.example .env                                # заполнить BOT_TOKEN и OWNER_IDS
 .venv/bin/alembic upgrade head
-.venv/bin/python -m bot
+.venv/bin/python main.py
 ```
+
+`python main.py` и `python -m bot` — один и тот же запуск: `main.py` только
+делегирует в `bot/__main__.py`, своей логики в нём нет.
 
 Если том MySQL создавался раньше, права на тестовые базы выдаются вручную:
 
