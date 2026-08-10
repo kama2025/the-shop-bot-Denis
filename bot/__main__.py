@@ -14,6 +14,7 @@ import sys
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
+from aiogram.exceptions import TelegramNetworkError, TelegramUnauthorizedError
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.fsm.storage.redis import RedisStorage
 from redis.asyncio import Redis
@@ -137,7 +138,32 @@ async def main() -> int:
             "и кнопкой «Проверить оплату»."
         )
 
-    me = await bot.get_me()
+    # Неверный токен — самая частая ошибка первого запуска. Ответить на неё
+    # трассировкой на тридцать строк значит заставить владельца искать причину
+    # там, где её нет.
+    try:
+        me = await bot.get_me()
+    except TelegramUnauthorizedError:
+        log.error("Telegram отклонил токен")
+        print(
+            "\n✗ Бот не запущен: Telegram отклонил BOT_TOKEN.\n"
+            "  Проверьте значение в .env — токен выдаёт @BotFather,\n"
+            "  он выглядит как 123456789:AA...  Если бот пересоздавался,\n"
+            "  старый токен больше не действует.",
+            file=sys.stderr,
+        )
+        await _shutdown(scheduler, None, registry, redis, bot, engine)
+        return 4
+    except TelegramNetworkError as exc:
+        log.error("Telegram недоступен: %s", exc)
+        print(
+            f"\n✗ Бот не запущен: не достучались до Telegram ({exc}).\n"
+            "  Проверьте сеть и доступность api.telegram.org.",
+            file=sys.stderr,
+        )
+        await _shutdown(scheduler, None, registry, redis, bot, engine)
+        return 5
+
     log.info("Бот запущен: @%s (id %s)", me.username, me.id)
     scheduler.start()
 
@@ -145,16 +171,26 @@ async def main() -> int:
         await bot.delete_webhook(drop_pending_updates=False)
         await dispatcher.start_polling(bot, allowed_updates=dispatcher.resolve_used_update_types())
     finally:
-        scheduler.shutdown(wait=False)
-        if webhook_runner is not None:
-            await webhook_runner.cleanup()
-        await registry.close()
-        if redis is not None:
-            await redis.aclose()
-        await bot.session.close()
-        await engine.dispose()
+        await _shutdown(scheduler, webhook_runner, registry, redis, bot, engine)
         log.info("Бот остановлен")
     return 0
+
+
+async def _shutdown(scheduler, webhook_runner, registry, redis, bot, engine) -> None:
+    """Закрывает всё, что успели открыть.
+
+    Вызывается и при штатной остановке, и при раннем отказе: незакрытые
+    соединения с MySQL и Redis переживают процесс и копятся при перезапусках.
+    """
+    if scheduler is not None and scheduler.running:
+        scheduler.shutdown(wait=False)
+    if webhook_runner is not None:
+        await webhook_runner.cleanup()
+    await registry.close()
+    if redis is not None:
+        await redis.aclose()
+    await bot.session.close()
+    await engine.dispose()
 
 
 if __name__ == "__main__":
