@@ -22,6 +22,7 @@ from bot.db.models import (
     Broadcast,
     Category,
     Channel,
+    DeliveryType,
     Order,
     OrderStatus,
     Product,
@@ -67,9 +68,15 @@ def _category(id_: int = 1) -> Category:
     return Category(id=id_, title="Категория", sort_order=10, is_active=True)
 
 
-def _product(id_: int = 1) -> Product:
+def _product(id_: int = 1, delivery_type: str = DeliveryType.TEXT) -> Product:
     return Product(
-        id=id_, category_id=1, title="Товар", price_kop=9000, sort_order=10, is_active=True
+        id=id_,
+        category_id=1,
+        title="Товар",
+        price_kop=9000,
+        sort_order=10,
+        is_active=True,
+        delivery_type=delivery_type,
     )
 
 
@@ -134,12 +141,38 @@ def _all_keyboards() -> list[tuple[str, InlineKeyboardMarkup]]:
         ("user.profile(bare)", user_kb.profile(has_promo=False, topup_enabled=False)),
         ("user.purchases", user_kb.purchases([order], 1, 5)),
         ("user.simple_back", user_kb.simple_back()),
+        (
+            "user.products(manual)",
+            user_kb.products(
+                [_product(2, DeliveryType.MANUAL)], {2: 10**6}, 1, 0, 1
+            ),
+        ),
+        (
+            "user.product_card(manual)",
+            user_kb.product_card(
+                _product(2, DeliveryType.MANUAL), 1, 9000, 10**6, 10, "u:cat:1:0"
+            ),
+        ),
         ("admin.menu(owner)", admin_kb.menu(is_owner=True)),
         ("admin.menu(admin)", admin_kb.menu(is_owner=False)),
         ("admin.categories", admin_kb.categories([category], 0, 2)),
         ("admin.category_card", admin_kb.category_card(category, 4)),
         ("admin.products", admin_kb.products([product], stock, 1, 0, 2)),
         ("admin.product_card", admin_kb.product_card(product)),
+        (
+            "admin.products(manual)",
+            admin_kb.products([_product(2, DeliveryType.MANUAL)], {2: 10**6}, 1, 0, 1),
+        ),
+        (
+            "admin.product_card(file)",
+            admin_kb.product_card(_product(3, DeliveryType.FILE)),
+        ),
+        ("admin.delivery_type_picker", admin_kb.delivery_type_picker(1)),
+        ("admin.delivery_type_switch", admin_kb.delivery_type_switch(1)),
+        (
+            "admin.order_card(manual)",
+            admin_kb.order_card(order, True, False, needs_manual=True),
+        ),
         ("admin.category_picker", admin_kb.category_picker([category], 1)),
         ("admin.stock_card", admin_kb.stock_card(product, [batch])),
         ("admin.batch_card", admin_kb.batch_card(batch)),
