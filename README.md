@@ -7,6 +7,8 @@ Telegram-бот-магазин цифровых товаров с полност
 Категории, товары, склад, тексты, картинка-шапка, каналы подписки, промокоды,
 администраторы и тайминги — всё в базе и правится из самого бота.
 
+- **Инструкция по запуску на своём компьютере:** [`docs/ЗАПУСК.html`](docs/ЗАПУСК.html)
+  — открывается в браузере; `docs/build-pdf.sh` собирает из неё PDF
 - Спецификация: [`docs/superpowers/specs/2026-08-10-telegram-shop-bot-design.md`](docs/superpowers/specs/2026-08-10-telegram-shop-bot-design.md)
 - План работ: [`docs/plans/2026-08-10-implementation-plan.md`](docs/plans/2026-08-10-implementation-plan.md)
 

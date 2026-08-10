@@ -1,0 +1,426 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>Запуск бота на своём компьютере</title>
+<style>
+  @page { size: A4; margin: 18mm 16mm 16mm 16mm; }
+  * { box-sizing: border-box; }
+  body {
+    font: 10.5pt/1.55 -apple-system, "SF Pro Text", "Helvetica Neue", Arial, sans-serif;
+    color: #1a1a1a; margin: 0;
+  }
+  h1 { font-size: 22pt; margin: 0 0 4pt; letter-spacing: -0.4pt; }
+  .sub { color: #666; font-size: 10pt; margin-bottom: 20pt; }
+  h2 {
+    font-size: 14pt; margin: 22pt 0 8pt; padding-top: 8pt;
+    border-top: 2px solid #1a1a1a; page-break-after: avoid;
+  }
+  h3 { font-size: 11.5pt; margin: 14pt 0 5pt; page-break-after: avoid; }
+  p, li { margin: 5pt 0; }
+  ul, ol { margin: 5pt 0 5pt 18pt; padding: 0; }
+  li { padding-left: 2pt; }
+  code {
+    font-family: "SF Mono", Menlo, Consolas, monospace; font-size: 9.5pt;
+    background: #f0f0f0; padding: 1pt 3pt; border-radius: 2pt;
+  }
+  pre {
+    font-family: "SF Mono", Menlo, Consolas, monospace; font-size: 9pt;
+    background: #f7f7f7; border-left: 3px solid #999; border-radius: 3px;
+    padding: 8pt 10pt; margin: 7pt 0; white-space: pre-wrap; word-break: break-word;
+    line-height: 1.45; page-break-inside: avoid;
+  }
+  pre code { background: none; padding: 0; font-size: inherit; }
+  table { border-collapse: collapse; width: 100%; margin: 8pt 0; font-size: 9.5pt; }
+  th, td { border: 1px solid #ccc; padding: 5pt 7pt; text-align: left; vertical-align: top; }
+  th { background: #f0f0f0; font-weight: 600; }
+  .note, .warn, .stop {
+    padding: 7pt 10pt; margin: 8pt 0; border-radius: 3px; page-break-inside: avoid;
+    font-size: 9.8pt;
+  }
+  .note { background: #eef4fb; border-left: 3px solid #3d7ab8; }
+  .warn { background: #fdf6e3; border-left: 3px solid #d0a33c; }
+  .stop { background: #fdeeee; border-left: 3px solid #c0504d; }
+  .step {
+    display: inline-block; background: #1a1a1a; color: #fff; width: 17pt; height: 17pt;
+    border-radius: 50%; text-align: center; line-height: 17pt; font-size: 10pt;
+    margin-right: 5pt; font-weight: 600;
+  }
+  .page-break { page-break-before: always; }
+  .toc { background: #f7f7f7; padding: 10pt 14pt; border-radius: 4px; margin-bottom: 6pt; }
+  .toc ol { margin: 4pt 0 0 16pt; }
+  .toc li { margin: 2pt 0; }
+  footer { margin-top: 22pt; padding-top: 8pt; border-top: 1px solid #ccc; font-size: 8.5pt; color: #777; }
+  .q { font-weight: 600; margin-top: 10pt; }
+  .a { margin: 3pt 0 0 0; }
+</style>
+</head>
+<body>
+
+<h1>Запуск бота-магазина на своём компьютере</h1>
+<div class="sub">
+  Проект <code>the-shop-bot-Denis</code> · Telegram-магазин цифровых товаров<br>
+  Инструкция для macOS и Linux. Все команды проверены на живом проекте.
+</div>
+
+<div class="toc">
+  <strong>Что предстоит сделать</strong>
+  <ol>
+    <li>Поставить Python, Docker и git</li>
+    <li>Скачать код</li>
+    <li>Создать окружение и поставить зависимости</li>
+    <li>Поднять базу данных и Redis</li>
+    <li>Заполнить файл настроек <code>.env</code></li>
+    <li>Создать таблицы в базе</li>
+    <li>Запустить бота</li>
+    <li>Настроить магазин внутри Telegram</li>
+  </ol>
+  Первый раз занимает около 20 минут, из них большая часть — ожидание загрузок.
+  Повторный запуск потом — две команды.
+</div>
+
+<h2>Что нужно поставить заранее</h2>
+
+<table>
+  <tr><th>Что</th><th>Зачем</th><th>Как проверить, что стоит</th></tr>
+  <tr>
+    <td><strong>Python 3.12 или новее</strong></td>
+    <td>на нём написан бот</td>
+    <td><code>python3 --version</code></td>
+  </tr>
+  <tr>
+    <td><strong>Docker Desktop</strong></td>
+    <td>в нём поднимаются база данных и Redis</td>
+    <td><code>docker --version</code></td>
+  </tr>
+  <tr>
+    <td><strong>git</strong></td>
+    <td>скачать код и получать обновления</td>
+    <td><code>git --version</code></td>
+  </tr>
+</table>
+
+<p>Если чего-то нет:</p>
+<ul>
+  <li><strong>Python</strong> — скачать с <code>python.org/downloads</code>. На macOS системный Python 3.9 не подойдёт, нужен свежий.</li>
+  <li><strong>Docker Desktop</strong> — скачать с <code>docker.com</code>, установить и <strong>запустить приложение</strong>. Docker должен работать в фоне, иначе команды <code>docker</code> будут ругаться на отсутствие подключения.</li>
+  <li><strong>git</strong> — на macOS ставится сам при первом запуске, либо командой <code>xcode-select --install</code>.</li>
+</ul>
+
+<div class="note">
+  <strong>Проверено на:</strong> macOS, Python 3.14.2, Docker 29.2, MySQL 8.0, Redis 7.
+  На более старом Python 3.12 и 3.13 всё тоже работает.
+</div>
+
+<h2><span class="step">1</span> Скачать код</h2>
+
+<p>Репозиторий приватный, поэтому нужен доступ к нему на GitHub и настроенный SSH-ключ либо вход через <code>gh</code>.</p>
+
+<pre><code>cd ~/Desktop
+git clone git@github.com:kama2025/the-shop-bot-Denis.git
+cd the-shop-bot-Denis</code></pre>
+
+<p>Если SSH не настроен, можно по HTTPS — GitHub спросит логин и токен:</p>
+
+<pre><code>git clone https://github.com/kama2025/the-shop-bot-Denis.git</code></pre>
+
+<div class="note">
+  <strong>Дальше все команды выполняются из папки проекта.</strong>
+  Если открыли новое окно терминала — сначала <code>cd ~/Desktop/the-shop-bot-Denis</code>.
+</div>
+
+<h2><span class="step">2</span> Создать окружение и поставить зависимости</h2>
+
+<pre><code>python3 -m venv .venv
+.venv/bin/pip install -r requirements.txt</code></pre>
+
+<p>Установка займёт пару минут. В конце должно быть написано <code>Successfully installed …</code> с длинным списком пакетов.</p>
+
+<p>Для разработки и запуска проверок дополнительно:</p>
+
+<pre><code>.venv/bin/pip install -r requirements-dev.txt</code></pre>
+
+<div class="warn">
+  <strong>Если установка зависла на несколько минут</strong> — почти наверняка pip пытается собрать пакет из исходников,
+  потому что для вашей версии Python нет готовой сборки. Прервите (<code>Ctrl+C</code>) и повторите так:
+  <pre><code>.venv/bin/pip install --only-binary=:all: -r requirements.txt</code></pre>
+  Версии в <code>requirements.txt</code> подобраны так, чтобы готовые сборки были. Понижать их вручную не стоит:
+  старые <code>aiohttp</code> и <code>pydantic</code> под новый Python собираются из исходников по двадцать минут,
+  а на сервере без компилятора просто падают.
+</div>
+
+<h2><span class="step">3</span> Поднять базу данных и Redis</h2>
+
+<p>Проверьте, что Docker Desktop запущен, и выполните:</p>
+
+<pre><code>docker compose -f docker-compose.dev.yml up -d</code></pre>
+
+<p>Первый раз Docker будет скачивать образы MySQL и Redis — это несколько минут. Проверить, что оба поднялись:</p>
+
+<pre><code>docker compose -f docker-compose.dev.yml ps</code></pre>
+
+<p>Оба контейнера должны быть в состоянии <code>Up … (healthy)</code>. Ожидайте увидеть:</p>
+
+<pre><code>NAME             STATUS
+shopbot-mysql    Up 30 seconds (healthy)
+shopbot-redis    Up 30 seconds (healthy)</code></pre>
+
+<div class="note">
+  Порты выбраны нестандартные — <strong>MySQL на 3307</strong>, <strong>Redis на 6380</strong>. Это сделано специально,
+  чтобы не конфликтовать с MySQL и Redis, которые уже могут стоять в системе.
+</div>
+
+<h3>Права для служебных баз</h3>
+
+<p>Нужны один раз, чтобы работали автоматические проверки:</p>
+
+<pre><code>docker exec -i shopbot-mysql mysql -uroot -pdevroot &lt; deploy/mysql-init/01-grants.sql</code></pre>
+
+<p>Команда молча отработает — это нормально.</p>
+
+<div class="page-break"></div>
+
+<h2><span class="step">4</span> Заполнить настройки</h2>
+
+<pre><code>cp .env.example .env</code></pre>
+
+<p>Откройте <code>.env</code> любым редактором. Обязательных полей три:</p>
+
+<table>
+  <tr><th>Поле</th><th>Что вписать</th><th>Где взять</th></tr>
+  <tr>
+    <td><code>BOT_TOKEN</code></td>
+    <td>токен бота</td>
+    <td>Telegram → <code>@BotFather</code> → <code>/mybots</code> → ваш бот → API Token</td>
+  </tr>
+  <tr>
+    <td><code>OWNER_IDS</code></td>
+    <td>ваш числовой Telegram ID</td>
+    <td><code>@userinfobot</code> в Telegram, либо команда <code>/id</code> в самом боте</td>
+  </tr>
+  <tr>
+    <td><code>DB_PASSWORD</code></td>
+    <td><code>devpass</code></td>
+    <td>уже задан в <code>.env.example</code>, менять не нужно</td>
+  </tr>
+</table>
+
+<p>Всё остальное можно оставить как есть — значения по умолчанию подходят для работы на своём компьютере.</p>
+
+<div class="stop">
+  <strong>Файл <code>.env</code> — это ключи от магазина.</strong> В нём токен бота и ключи платёжной системы.
+  Он намеренно не попадает в git и не должен пересылаться в мессенджерах. Если токен куда-то утёк —
+  перевыпустите его в <code>@BotFather</code> командой <code>/revoke</code>.
+</div>
+
+<h3>Платежи (можно отложить)</h3>
+
+<p>Пока ключей нет, оставьте выключенными:</p>
+
+<pre><code>PLATEGA_ENABLED=false
+CRYPTOBOT_ENABLED=false</code></pre>
+
+<p>Бот запустится и будет работать — оплата пройдёт через внутренний баланс. Когда появятся ключи:</p>
+
+<table>
+  <tr><th>Поле</th><th>Где взять</th></tr>
+  <tr><td><code>PLATEGA_MERCHANT_ID</code>, <code>PLATEGA_SECRET</code></td><td>личный кабинет Platega либо менеджер при подключении</td></tr>
+  <tr><td><code>PLATEGA_METHODS</code></td><td>какие способы показывать: <code>2</code> СБП, <code>11</code> карта, <code>13</code> крипта, <code>3</code> ЕРИП, <code>12</code> международные, <code>14</code> SberPay. Через запятую, например <code>2,11,13</code></td></tr>
+  <tr><td><code>CRYPTOBOT_TOKEN</code></td><td><code>@CryptoBot</code> → Crypto Pay → Create App</td></tr>
+</table>
+
+<p>После правки <code>.env</code> бота нужно перезапустить — настройки читаются один раз при старте.</p>
+
+<h2><span class="step">5</span> Создать таблицы в базе</h2>
+
+<pre><code>.venv/bin/alembic upgrade head</code></pre>
+
+<p>Команда создаст 20 таблиц. Повторный запуск безопасен — если всё уже создано, она ничего не сделает.</p>
+
+<h2><span class="step">6</span> Запустить бота</h2>
+
+<pre><code>.venv/bin/python main.py</code></pre>
+
+<p>Если всё хорошо, в терминале появятся строки со словами <code>База подключена</code>, <code>Redis подключён</code> и <code>Бот запущен: @имя_бота</code>. Открывайте бота в Telegram и отправляйте <code>/start</code>.</p>
+
+<div class="warn">
+  <strong>Бот работает, пока открыт терминал.</strong> Закроете окно, усыпите или перезагрузите компьютер —
+  бот остановится. Это нормально для работы на своём компьютере. Для круглосуточной работы нужен сервер.
+</div>
+
+<p>Остановить — <code>Ctrl+C</code> в том же окне терминала.</p>
+
+<h3>Запуск в следующий раз</h3>
+
+<p>Когда всё уже настроено, для запуска нужны две команды:</p>
+
+<pre><code>cd ~/Desktop/the-shop-bot-Denis
+docker compose -f docker-compose.dev.yml up -d   # если Docker перезапускался
+.venv/bin/python main.py</code></pre>
+
+<div class="page-break"></div>
+
+<h2><span class="step">7</span> Настроить магазин внутри Telegram</h2>
+
+<p>Всё управление — в самом боте, лезть в код не нужно.</p>
+
+<ol>
+  <li>Отправьте боту <code>/start</code>, затем <code>/admin</code>. Команда <code>/admin</code> видна только тем,
+      чей ID указан в <code>OWNER_IDS</code>, обычные покупатели её не видят.</li>
+  <li><strong>Категории</strong> → «Новая категория» — создайте раздел, например «Подписки».</li>
+  <li>Зайдите в категорию → <strong>Товары</strong> → «Новый товар». Первым делом бот спросит,
+      <strong>как товар попадает к покупателю</strong>:
+      <ul>
+        <li><strong>Текст со склада</strong> — ссылки, ключи, логины с паролями. Выдаётся автоматически.</li>
+        <li><strong>Файл со склада</strong> — архивы, документы, картинки. Выдаётся автоматически.</li>
+        <li><strong>Выдаёт администратор</strong> — склад не нужен, после оплаты вам придёт уведомление с контактом покупателя.</li>
+      </ul>
+  </li>
+  <li>Дальше бот спросит название, описание, цену и картинку.</li>
+  <li>Для первых двух типов зайдите в товар → <strong>Склад</strong> → «Залить позиции».
+      Текстовые позиции отправляются одним сообщением и разделяются <strong>пустой строкой</strong>.
+      Файлы присылаются по одному, в конце — кнопка «Готово».</li>
+</ol>
+
+<div class="note">
+  <strong>Без позиций на складе товар не продаётся</strong> — покупатель увидит «нет в наличии».
+  Исключение — тип «Выдаёт администратор»: ему склад не нужен.
+</div>
+
+<h3>Проверка подписки на канал</h3>
+
+<p>Пока не добавлен ни один канал, проверка выключена и магазин открыт всем. Чтобы включить:</p>
+
+<ol>
+  <li>Добавьте бота <strong>администратором</strong> в свой канал. Без прав администратора Telegram
+      не позволяет проверять чужие подписки — это его ограничение, а не бота.</li>
+  <li><code>/admin</code> → <strong>Каналы</strong> → «Добавить канал».</li>
+  <li>Пришлите ссылку <code>https://t.me/название</code>, либо <code>@имя</code>, либо числовой ID,
+      либо просто <strong>перешлите любой пост из канала</strong> — последнее надёжнее всего для закрытых каналов.</li>
+</ol>
+
+<p>Каналов может быть несколько — потребуется подписка на все. Проверять удобно со второго аккаунта:
+вы сами как администратор проходите мимо проверки.</p>
+
+<h3>Остальные разделы админки</h3>
+
+<table>
+  <tr><td><strong>Заказы</strong></td><td>список, поиск по номеру заказа и Telegram ID, возврат денег на баланс, замена товара, ручная выдача</td></tr>
+  <tr><td><strong>Промокоды</strong></td><td>процент или фиксированная сумма, срок, лимиты, ограничение по категории</td></tr>
+  <tr><td><strong>Рассылки</strong></td><td>текст, фото или видео с кнопками; предпросмотр и подтверждение перед отправкой</td></tr>
+  <tr><td><strong>Статистика</strong></td><td>пользователи, продажи, выручка, остатки склада</td></tr>
+  <tr><td><strong>Тексты</strong></td><td>все сообщения бота правятся отсюда, без правки кода</td></tr>
+  <tr><td><strong>Настройки</strong></td><td>картинка-шапка, контакт поддержки, режим обслуживания, пороги</td></tr>
+  <tr><td><strong>Выгрузка</strong></td><td>заказы в файл Excel</td></tr>
+</table>
+
+<h2>Демонстрационные товары</h2>
+
+<p>Чтобы посмотреть, как всё работает, можно наполнить каталог примерами:</p>
+
+<pre><code>.venv/bin/python scripts/seed_demo.py</code></pre>
+
+<p>Создаст две категории, три товара с позициями на складе и промокод <code>DEMO10</code> на 10 %.
+Всё помечено словом «ДЕМО». Убрать:</p>
+
+<pre><code>.venv/bin/python scripts/seed_demo.py --clean</code></pre>
+
+<div class="page-break"></div>
+
+<h2>Если что-то пошло не так</h2>
+
+<div class="q">✗ Бот не запущен. Исправьте .env: BOT_TOKEN не задан</div>
+<div class="a">Не заполнен токен в <code>.env</code>. Возьмите его в <code>@BotFather</code> и впишите в строку <code>BOT_TOKEN=</code> без пробелов и кавычек.</div>
+
+<div class="q">✗ Бот не запущен: Telegram отклонил BOT_TOKEN</div>
+<div class="a">Токен неверный или устарел. Если бота пересоздавали или делали <code>/revoke</code>, старый токен больше не действует — возьмите новый.</div>
+
+<div class="q">✗ Бот не запущен: база недоступна</div>
+<div class="a">
+  Обычно одно из двух:
+  <ul>
+    <li>не запущен Docker или контейнеры. Проверьте: <code>docker compose -f docker-compose.dev.yml ps</code>, при необходимости <code>… up -d</code>;</li>
+    <li>не созданы таблицы. Выполните <code>.venv/bin/alembic upgrade head</code>.</li>
+  </ul>
+</div>
+
+<div class="q">Conflict: terminated by other getUpdates request</div>
+<div class="a">
+  Запущено два экземпляра бота одновременно — Telegram такого не допускает. Остановите лишний:
+  <pre><code>pkill -f "python main.py"; pkill -f "python -m bot"</code></pre>
+  и запустите заново. Один токен — один работающий бот.
+</div>
+
+<div class="q">Redis недоступен</div>
+<div class="a">
+  Бот всё равно запустится и будет продавать, но состояние диалогов будет храниться в памяти и потеряется
+  при перезапуске, а кеш проверки подписки и защита от частых нажатий отключатся. Поднимите Redis:
+  <code>docker compose -f docker-compose.dev.yml up -d</code>.
+</div>
+
+<div class="q">cryptography package is required for sha256_password</div>
+<div class="a">
+  Не установлен пакет <code>cryptography</code> — MySQL 8 без него не пускает. Лечится:
+  <code>.venv/bin/pip install cryptography</code>. В <code>requirements.txt</code> он есть, так что обычно это значит,
+  что установка зависимостей прошла не до конца.
+</div>
+
+<div class="q">Порт 3307 или 6380 уже занят</div>
+<div class="a">
+  Что-то другое заняло порт. Либо освободите его, либо поменяйте номер в двух местах сразу:
+  в <code>docker-compose.dev.yml</code> и в <code>.env</code> (<code>DB_PORT</code> или <code>REDIS_PORT</code>).
+</div>
+
+<div class="q">Кнопка нажимается, но ничего не происходит</div>
+<div class="a">
+  Скорее всего сообщение старое — от предыдущего запуска бота. Отправьте <code>/start</code> и работайте
+  со свежим меню.
+</div>
+
+<h2>Проверки: убедиться, что всё цело</h2>
+
+<p>Пригодятся после правок кода или обновления из git.</p>
+
+<pre><code>deploy/run-tests-gate.sh      # все тесты проекта
+deploy/check-migrations.sh    # проверка структуры базы
+.venv/bin/python scripts/mutate.py   # проверка, что тесты реально ловят поломки</code></pre>
+
+<table>
+  <tr><th>Код возврата</th><th>Что значит</th></tr>
+  <tr><td><strong>0</strong></td><td>всё в порядке</td></tr>
+  <tr><td><strong>1</strong></td><td>появились новые падения — что-то сломано</td></tr>
+  <tr><td><strong>3</strong></td><td>проверка <strong>не состоялась</strong>: нет окружения, базы или зависимостей. Это не «всё чисто», это «не проверяли»</td></tr>
+</table>
+
+<div class="warn">
+  <code>deploy/check-migrations.sh --reset</code> <strong>стирает базу разработки</strong> перед проверкой.
+  Пользуйтесь им, только если данных не жалко. На сервере такой сброс запрещён без явного разрешения.
+</div>
+
+<h2>Обновление кода</h2>
+
+<pre><code>cd ~/Desktop/the-shop-bot-Denis
+git pull
+.venv/bin/pip install -r requirements.txt   # если менялись зависимости
+.venv/bin/alembic upgrade head              # если менялась структура базы
+.venv/bin/python main.py</code></pre>
+
+<p>Файл <code>.env</code> при обновлении не затрагивается — он не хранится в git.</p>
+
+<h2>Чего эта инструкция не покрывает</h2>
+
+<ul>
+  <li><strong>Работу на сервере.</strong> На своём компьютере бот живёт, пока открыт терминал.
+      Для круглосуточной работы нужен сервер: MySQL, Redis, запуск под systemd.</li>
+  <li><strong>Мгновенное подтверждение оплаты.</strong> Платёжная система присылает уведомление об оплате
+      только на публичный адрес с сертификатом HTTPS, а его на домашнем компьютере нет.
+      Поэтому бот сам опрашивает статус платежа каждые 45 секунд, плюс покупатель может нажать
+      «Проверить оплату». Товар доходит в любом случае, просто с задержкой до минуты.</li>
+</ul>
+
+<footer>
+  Проект <code>the-shop-bot-Denis</code>. Подробности об устройстве — в файле <code>README.md</code> в корне проекта.
+</footer>
+
+</body>
+</html>
