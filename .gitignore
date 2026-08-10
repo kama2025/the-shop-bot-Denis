@@ -1,0 +1,26 @@
+.env
+.env.*
+!.env.example
+*.pyc
+__pycache__/
+.venv/
+venv/
+.pytest_cache/
+.idea/
+.vscode/
+.DS_Store
+logs/
+media/products/*
+!media/products/.gitkeep
+media/header.*
+exports/
+deploy/.schema-snapshot-*.sql
+
+# Промежуточные файлы проверок — результат прогона, а не исходник
+deploy/.last-test-run.txt
+deploy/.current-failures.txt
+deploy/.baseline-clean.txt
+deploy/.cmp-*.sql
+deploy/.schema-*.sql
+deploy/.schema-diff.txt
+deploy/.schema-model-diff.txt

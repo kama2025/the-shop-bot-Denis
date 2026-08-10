@@ -1,0 +1,58 @@
+# Окружение для разработки.
+#
+# Порты намеренно нестандартные (3307 и 6380), чтобы не конфликтовать с MySQL
+# и Redis, уже установленными в системе.
+#
+# ⚠️ Версия MySQL здесь обязана совпадать с прод-сервером. Сейчас стоит 8.0 —
+# это то, что ставится по умолчанию на Ubuntu 22.04. Когда сервер появится и
+# версия окажется другой, поменять здесь и заново прогнать
+# deploy/check-migrations.sh: миграции проверяются на настоящей СУБД той же
+# версии, иначе проверка измеряет не тот мир.
+#
+#   docker compose -f docker-compose.dev.yml up -d
+#
+services:
+  mysql:
+    image: mysql:8.0
+    container_name: shopbot-mysql
+    restart: unless-stopped
+    command: >
+      --character-set-server=utf8mb4
+      --collation-server=utf8mb4_unicode_ci
+      --sql-mode=STRICT_TRANS_TABLES,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION,ONLY_FULL_GROUP_BY
+    environment:
+      MYSQL_ROOT_PASSWORD: devroot
+      MYSQL_DATABASE: shopbot
+      MYSQL_USER: shopbot
+      MYSQL_PASSWORD: devpass
+    ports:
+      - "3307:3306"
+    volumes:
+      - shopbot-mysql-data:/var/lib/mysql
+      # Выполняется только при создании тома. Если том уже есть, права
+      # выдаются вручную:
+      #   docker exec -i shopbot-mysql mysql -uroot -pdevroot < deploy/mysql-init/01-grants.sql
+      - ./deploy/mysql-init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-pdevroot"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    container_name: shopbot-redis
+    restart: unless-stopped
+    ports:
+      - "6380:6379"
+    volumes:
+      - shopbot-redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+volumes:
+  shopbot-mysql-data:
+  shopbot-redis-data:
