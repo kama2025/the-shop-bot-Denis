@@ -63,14 +63,20 @@ MUTATIONS: list[Mutation] = [
     Mutation(
         name="delivery-idempotency",
         path="bot/services/delivery.py",
+        # Такая же отсечка есть в `complete_manual`, поэтому якорь захватывает
+        # следующую строку — иначе поломка встаёт не туда.
         anchor="    if order.status == OrderStatus.DELIVERED:\n"
         "        return DeliveryResult(\n"
         "            ok=True, items=await items_of(session, order.id), already_delivered=True\n"
-        "        )",
+        "        )\n"
+        "\n"
+        "    if order.delivery_type == DeliveryType.MANUAL:",
         replacement="    if False:  # МУТАЦИЯ\n"
         "        return DeliveryResult(\n"
         "            ok=True, items=await items_of(session, order.id), already_delivered=True\n"
-        "        )",
+        "        )\n"
+        "\n"
+        "    if order.delivery_type == DeliveryType.MANUAL:",
         tests=[
             "tests/test_orders_db.py::test_delivery_is_idempotent",
             "tests/test_payments_db.py::test_confirmed_delivers_once",
