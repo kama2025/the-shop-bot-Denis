@@ -61,28 +61,137 @@ class Mutation:
 
 MUTATIONS: list[Mutation] = [
     Mutation(
-        name="delivery-idempotency",
+        name="delivery-requires-payment",
         path="bot/services/delivery.py",
-        # Такая же отсечка есть в `complete_manual`, поэтому якорь захватывает
-        # следующую строку — иначе поломка встаёт не туда.
-        anchor="    if order.status == OrderStatus.DELIVERED:\n"
-        "        return DeliveryResult(\n"
-        "            ok=True, items=await items_of(session, order.id), already_delivered=True\n"
-        "        )\n"
-        "\n"
-        "    if order.delivery_type == DeliveryType.MANUAL:",
+        anchor="    if order.status != OrderStatus.PAID:\n"
+        "        return StepResult(ok=False, order=order)",
         replacement="    if False:  # МУТАЦИЯ\n"
-        "        return DeliveryResult(\n"
-        "            ok=True, items=await items_of(session, order.id), already_delivered=True\n"
-        "        )\n"
+        "        return StepResult(ok=False, order=order)",
+        tests=["tests/test_payments_db.py", "tests/test_fulfillment_db.py"],
+        breaks="снята проверка «заказ оплачен» перед выдачей токена",
+        guards="токен и работа достаются только оплаченному заказу",
+    ),
+    Mutation(
+        name="token-issued-once",
+        path="bot/services/delivery.py",
+        anchor="    if not order.token:",
+        replacement="    if True:  # МУТАЦИЯ",
+        tests=["tests/test_payments_db.py"],
+        breaks="токен перевыдаётся при каждом подтверждении оплаты",
+        guards="покупателю не меняют номер заказа задним числом",
+    ),
+    Mutation(
+        name="credentials-required",
+        path="bot/services/delivery.py",
+        anchor="    if not login or not password:\n"
+        "        return StepResult(ok=False, order=order)",
+        replacement="    if False:  # МУТАЦИЯ\n"
+        "        return StepResult(ok=False, order=order)",
+        tests=["tests/test_fulfillment_db.py"],
+        breaks="заказ уходит в работу с пустым логином или пустым паролем",
+        guards="администратор не получает заказ, по которому нельзя работать",
+    ),
+    Mutation(
+        name="confirm-done-idempotency",
+        path="bot/services/delivery.py",
+        anchor="    if order.status == OrderStatus.DELIVERED:\n"
+        "        return StepResult(ok=True, order=order, repeated=True)\n"
         "\n"
-        "    if order.delivery_type == DeliveryType.MANUAL:",
-        tests=[
-            "tests/test_orders_db.py::test_delivery_is_idempotent",
-            "tests/test_payments_db.py::test_confirmed_delivers_once",
-        ],
-        breaks="снята отсечка «заказ уже выдан»",
-        guards="один заказ — не более одной выдачи",
+        "    if order.status != OrderStatus.IN_WORK:",
+        replacement="    if False:  # МУТАЦИЯ\n"
+        "        return StepResult(ok=True, order=order, repeated=True)\n"
+        "\n"
+        "    if order.status != OrderStatus.IN_WORK:",
+        tests=["tests/test_fulfillment_db.py"],
+        breaks="повторное подтверждение выполнения проходит как первое",
+        guards="покупатель не получает второе «заказ выполнен», исполнитель в журнале не подменяется",
+    ),
+    Mutation(
+        name="confirm-order-row-lock",
+        path="bot/services/payments.py",
+        anchor="    order = await orders_repo.get_for_update(session, order_id)\n"
+        "    if order is None:\n"
+        "        return ConfirmResult(Outcome.NOT_FOUND)\n"
+        "\n"
+        "    # 1. Оплаченные заказы",
+        replacement="    order = await orders_repo.get(session, order_id)  # МУТАЦИЯ\n"
+        "    if order is None:\n"
+        "        return ConfirmResult(Outcome.NOT_FOUND)\n"
+        "\n"
+        "    # 1. Оплаченные заказы",
+        tests=["tests/test_payments_db.py"],
+        breaks="подтверждение оплаты читает заказ без блокировки строки",
+        guards="два одновременных подтверждения не проводят платёж дважды",
+    ),
+    Mutation(
+        name="balance-charged-before-paid",
+        path="bot/services/payments.py",
+        anchor="    try:\n"
+        "        await balance_repo.move(\n"
+        "            session,\n"
+        "            user_id=order.user_id,\n"
+        "            amount_kop=-order.total_kop,",
+        replacement="    order.status = OrderStatus.PAID  # МУТАЦИЯ\n"
+        "    await session.flush()\n"
+        "    try:\n"
+        "        await balance_repo.move(\n"
+        "            session,\n"
+        "            user_id=order.user_id,\n"
+        "            amount_kop=-order.total_kop,",
+        tests=["tests/test_payments_db.py"],
+        breaks="заказ помечается оплаченным до списания с баланса",
+        guards="при нехватке средств заказ не остаётся оплаченным",
+    ),
+    Mutation(
+        name="rate-frozen-in-order",
+        path="bot/services/orders.py",
+        anchor="        rate_kop=calc.rate_kop,",
+        replacement="        rate_kop=0,  # МУТАЦИЯ",
+        tests=["tests/test_orders_db.py"],
+        breaks="курс не сохраняется в заказе",
+        guards="сумма оплаченного заказа не зависит от того, как потом двинулся курс",
+    ),
+    Mutation(
+        name="rate-required-to-sell",
+        path="bot/services/orders.py",
+        anchor="    if rate_kop <= 0:\n"
+        "        raise RateUnavailable",
+        replacement="    if False:  # МУТАЦИЯ\n"
+        "        raise RateUnavailable",
+        tests=["tests/test_orders_db.py"],
+        breaks="товар продаётся при отсутствующем курсе",
+        guards="без курса магазин отказывается продавать, а не считает по нулю",
+    ),
+    Mutation(
+        name="search-threshold",
+        path="bot/services/search.py",
+        anchor="DEFAULT_THRESHOLD = 60",
+        replacement="DEFAULT_THRESHOLD = 0  # МУТАЦИЯ",
+        tests=["tests/test_search.py"],
+        breaks="снят порог похожести в поиске",
+        guards="поиск не возвращает весь каталог на любой запрос",
+    ),
+    Mutation(
+        name="search-one-word-is-not-a-match",
+        path="bot/services/search.py",
+        anchor="        if len(token) >= _SIGNIFICANT_TOKEN and best < DEFAULT_THRESHOLD:\n"
+        "            return 0.0",
+        replacement="        if False:  # МУТАЦИЯ\n"
+        "            return 0.0",
+        tests=["tests/test_search.py::test_one_shared_word_is_not_a_match"],
+        breaks="одно общее слово запроса вытаскивает чужой товар",
+        guards="«премиум нетфликс» не находит Spotify Premium",
+    ),
+    Mutation(
+        name="refund-not-twice",
+        path="bot/services/refunds.py",
+        anchor="    if order.status == OrderStatus.REFUNDED:\n"
+        '        return RefundResult(False, detail="Возврат по этому заказу уже сделан")',
+        replacement="    if False:  # МУТАЦИЯ\n"
+        '        return RefundResult(False, detail="Возврат по этому заказу уже сделан")',
+        tests=["tests/test_refunds_db.py"],
+        breaks="возврат по одному заказу проходит дважды",
+        guards="деньги не возвращаются покупателю по два раза",
     ),
     Mutation(
         name="access-default-deny",
@@ -140,28 +249,6 @@ MUTATIONS: list[Mutation] = [
         guards="чужая оплата не закрывает наш заказ",
     ),
     Mutation(
-        name="stock-partial-reserve",
-        path="bot/repo/stock.py",
-        # Якорь захватывает и следующую строку: точно такая же проверка есть
-        # в `take_available`, и без уточнения поломка встаёт не туда.
-        anchor="    if len(items) < qty:\n"
-        "        return []\n"
-        "\n"
-        "    for item in items:\n"
-        "        item.status = StockStatus.RESERVED",
-        replacement="    if False:  # МУТАЦИЯ\n"
-        "        return []\n"
-        "\n"
-        "    for item in items:\n"
-        "        item.status = StockStatus.RESERVED",
-        tests=[
-            "tests/test_orders_db.py::test_reserve_never_leaves_partial_hold",
-            "tests/test_orders_db.py::test_two_buyers_never_get_the_same_item",
-        ],
-        breaks="разрешён частичный резерв склада",
-        guards="двум покупателям не достаётся одна позиция",
-    ),
-    Mutation(
         name="subscription-membership",
         path="bot/services/subscription.py",
         anchor='            if getattr(member, "status", None) not in MEMBER_STATUSES:',
@@ -169,26 +256,6 @@ MUTATIONS: list[Mutation] = [
         tests=["tests/test_subscription_db.py::test_unsubscribed_statuses"],
         breaks="проверка статуса участника канала обесценена",
         guards="неподписанный не попадает в магазин",
-    ),
-    Mutation(
-        name="manual-awaits-admin",
-        path="bot/services/delivery.py",
-        anchor="    if order.delivery_type == DeliveryType.MANUAL:\n"
-        "        return await _await_manual(session, order)",
-        replacement="    if False:  # МУТАЦИЯ\n"
-        "        return await _await_manual(session, order)",
-        tests=["tests/test_delivery_types_db.py"],
-        breaks="товар с ручной выдачей перестал попадать в очередь к админу",
-        guards="оплаченный заказ с ручной выдачей ждёт администратора, а не считается выданным",
-    ),
-    Mutation(
-        name="manual-always-available",
-        path="bot/repo/stock.py",
-        anchor="    if kind == DeliveryType.MANUAL:\n        return MANUAL_STOCK",
-        replacement="    if False:  # МУТАЦИЯ\n        return MANUAL_STOCK",
-        tests=["tests/test_delivery_types_db.py::test_manual_product_is_always_buyable"],
-        breaks="товар с ручной выдачей стал «нет в наличии»",
-        guards="товар без склада всё равно можно купить",
     ),
     Mutation(
         name="button-style-guard",

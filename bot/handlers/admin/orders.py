@@ -349,7 +349,7 @@ async def confirm_done(
         )
         return
 
-    await audit_repo.write(session, actor.user_id, "order.done", "order", order_id, None)
+    await audit_repo.record(session, actor.user_id, "order.done", "order", order_id)
     await call.answer("Готово")
 
     text = await text_service.get(

@@ -7,6 +7,7 @@ from decimal import Decimal
 import pytest
 
 from bot.services.pricing import base_kop, charge_kop, format_usd, with_markup
+from bot.utils.money import DISCOUNT_FIXED, apply_discount
 
 
 def test_base_converts_by_rate() -> None:
@@ -47,6 +48,89 @@ def test_markup_rounds_half_kopeck_up() -> None:
 def test_charge_rounds_half_kopeck_up() -> None:
     """Половина вверх обязана дожить до итоговой суммы, а не только до базы."""
     assert charge_kop(2, 100, 25) == 3
+
+
+@pytest.mark.parametrize(
+    ("price_usd_cents", "rate_kop", "expected"),
+    [
+        (1, 9050, 91),  # 90,5 — целая часть чётная
+        (3, 9050, 272),  # 271,5 — целая часть НЕЧЁТНАЯ
+        (5, 9050, 453),  # 452,5 — чётная
+        (7, 9050, 634),  # 633,5 — нечётная
+        (1, 50, 1),  # 0,5 — граница нуля
+        (3, 50, 2),  # 1,5
+    ],
+)
+def test_base_rounds_every_half_up_regardless_of_parity(
+    price_usd_cents: int, rate_kop: int, expected: int
+) -> None:
+    """Половина всегда вверх — и когда целая часть чётная, и когда нечётная.
+
+    Одной ничьей мало: правило «половина к чётному» ловится только чётной
+    целой частью, а зеркальное «половина к нечётному» — только нечётной.
+    Пока в тестах были одни чётные (90,5 и 2,5), реализация, округляющая
+    271,5 вниз до 271, проходила весь файл целиком.
+    """
+    assert base_kop(price_usd_cents, rate_kop) == expected
+
+
+@pytest.mark.parametrize(
+    ("amount_kop", "markup_pct", "expected"),
+    [
+        (2, 25, 3),  # 2,5 — чётная целая часть
+        (6, 25, 8),  # 7,5 — нечётная
+        (10, 25, 13),  # 12,5 — чётная
+        (14, 25, 18),  # 17,5 — нечётная
+    ],
+)
+def test_markup_rounds_every_half_up_regardless_of_parity(
+    amount_kop: int, markup_pct: int, expected: int
+) -> None:
+    """То же правило чётности, но для наценки."""
+    assert with_markup(amount_kop, markup_pct) == expected
+
+
+@pytest.mark.parametrize(
+    ("markup_pct", "expected"),
+    [
+        (100, 200),  # удвоение
+        (150, 250),
+        (200, 300),  # выше 100 % — не потолок, а обычное число
+        (1000, 1100),
+    ],
+)
+def test_markup_above_hundred_percent_is_not_capped(
+    markup_pct: int, expected: int
+) -> None:
+    """Наценка больше 100 % работает как есть, без молчаливого потолка.
+
+    Проверка на конкретных числах, а не через сравнение с самой собой:
+    реализация с `min(markup, 100)` проходила и монотонность, и сверку
+    `charge_kop` с последовательным вызовом — обе стороны обрезались одинаково.
+    """
+    assert with_markup(100, markup_pct) == expected
+
+
+def test_charge_keeps_markup_above_hundred_percent() -> None:
+    """$20 по курсу 90,00 ₽ с наценкой 150 % = 4500 ₽."""
+    assert charge_kop(2000, 9000, 150) == 450_000
+
+
+def test_promo_applies_after_markup() -> None:
+    """Промокод вычитается из суммы С наценкой, а не из чистого пересчёта.
+
+    План (фаза 3) требует именно такого порядка: покупатель видит скидку от
+    того числа, которое ему назвали на шаге оплаты. Фиксированная скидка
+    порядок вскрывает, процентная — нет: проценты переставимы.
+    """
+    charge = charge_kop(2000, 9000, 10)  # 1980 ₽
+    _, total = apply_discount(charge, DISCOUNT_FIXED, 10_000)  # минус 100 ₽
+    assert total == 188_000  # 1880 ₽
+
+    # Тот же промокод, применённый ДО наценки, дал бы 1870 ₽ — на 10 ₽ меньше.
+    _, before_markup = apply_discount(base_kop(2000, 9000), DISCOUNT_FIXED, 10_000)
+    assert with_markup(before_markup, 10) == 187_000
+    assert total != with_markup(before_markup, 10)
 
 
 @pytest.mark.parametrize("price_usd_cents", [0, 1, 3, 999, 1999, 2000, 123_456])
@@ -169,3 +253,28 @@ def test_non_int_money_rejected(bad: object) -> None:
         base_kop(bad, 9000)  # type: ignore[arg-type]
     with pytest.raises(TypeError):
         base_kop(2000, bad)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("bad", [20.0, "2000", Decimal("2000"), None, True])
+def test_non_int_money_rejected_in_every_function(bad: object) -> None:
+    """Запрет не-int обязан работать во всех четырёх функциях, а не в base_kop.
+
+    Decimal особенно коварен: он не float, арифметику с int переживает молча
+    и до этой проверки доезжал до результата, а не до отказа.
+    """
+    with pytest.raises(TypeError):
+        with_markup(bad, 10)  # type: ignore[arg-type]
+    with pytest.raises(TypeError):
+        with_markup(180_000, bad)  # type: ignore[arg-type]
+    with pytest.raises(TypeError):
+        charge_kop(2000, 9000, bad)  # type: ignore[arg-type]
+    with pytest.raises(TypeError):
+        format_usd(bad)  # type: ignore[arg-type]
+
+
+def test_result_is_plain_int() -> None:
+    """Возвращаем int, а не Decimal: сумма уезжает в БД и в счёт эквайринга,
+    где Decimal либо упадёт, либо запишется строкой."""
+    assert type(base_kop(1, 9050)) is int
+    assert type(with_markup(2, 25)) is int
+    assert type(charge_kop(2000, 9000, 10)) is int

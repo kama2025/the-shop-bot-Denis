@@ -52,6 +52,13 @@ def parse_price_usd(raw: str) -> int:
         value = Decimal(cleaned)
     except InvalidOperation as exc:
         raise ValueError("не похоже на число") from exc
+    # `Decimal` разбирает "nan" и "inf" как совершенно законные значения, а вот
+    # сравнение NaN с нулём возбуждает `InvalidOperation` — не `ValueError`,
+    # который ловит хендлер. Мастер падал бы с необработанным исключением прямо
+    # на шаге цены. Отсекаем до первого сравнения.
+    if not value.is_finite():
+        raise ValueError("не похоже на число")
+
     if value <= 0:
         raise ValueError("цена должна быть больше нуля")
     if value > MAX_PRICE_USD:
@@ -223,7 +230,7 @@ async def save_product(
         price_usd_cents=int(data["wizard_price_cents"]),
         image_file_id=str(data["wizard_image_file_id"]),
     )
-    await audit_repo.write(
+    await audit_repo.record(
         session, actor.user_id, "product.create", "product", product.id, {"via": "wizard"}
     )
     await soft_reset(state)

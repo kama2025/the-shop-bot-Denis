@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.db.base import utcnow
-from bot.db.models import BalanceTxnKind, Order, OrderStatus
+from bot.db.models import BalanceTxnKind, Order, OrderKind, OrderStatus
 from bot.logger import payment_log
 from bot.repo import balance as balance_repo
 from bot.repo import orders as orders_repo
@@ -57,6 +57,17 @@ async def refund_to_balance(
         return RefundResult(False, detail="Заказ не найден")
     if order.status == OrderStatus.REFUNDED:
         return RefundResult(False, detail="Возврат по этому заказу уже сделан")
+    if order.kind == OrderKind.TOPUP:
+        # Пополнение баланса — не покупка. Деньги по нему УЖЕ на балансе, и
+        # «возврат» начислил бы их второй раз: пополнил на тысячу, нажали
+        # возврат — на балансе две. Забрать пополнение обратно тоже нельзя:
+        # покупатель мог его уже потратить, и баланс ушёл бы в минус.
+        # Правка баланса вручную для этого есть в карточке пользователя.
+        return RefundResult(
+            False,
+            detail="Это пополнение баланса, а не покупка. "
+            "Правьте баланс вручную в карточке пользователя.",
+        )
     if order.status not in REFUNDABLE:
         return RefundResult(False, detail="Возврат возможен только по оплаченному заказу")
 
@@ -93,4 +104,4 @@ async def refund_to_balance(
 
 
 def order_can_be_refunded(order: Order) -> bool:
-    return order.status in REFUNDABLE
+    return order.kind != OrderKind.TOPUP and order.status in REFUNDABLE
