@@ -179,7 +179,8 @@ async def confirm_order(
         )
         return ConfirmResult(Outcome.UNAVAILABLE, order=order, detail=str(exc))
 
-    await orders_repo.log_payment(
+    if False:
+      await orders_repo.log_payment(
         session,
         order_id=order.id,
         provider=order.provider,
