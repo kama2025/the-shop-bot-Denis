@@ -160,15 +160,13 @@ def _all_keyboards() -> list[tuple[str, InlineKeyboardMarkup]]:
         ("user.product_card", user_kb.product_card(product, 178200, f"u:cat:{CATEGORY_ID}:0")),
         ("user.product_card(no rate)", user_kb.product_card(product, None, f"u:cat:{CATEGORY_ID}:0")),
         ("user.send_credentials", user_kb.send_credentials(ORDER_ID)),
-        ("user.payment_methods", user_kb.payment_methods(order, _methods(), 500000)),
+        ("user.payment_methods", user_kb.payment_methods(order, _methods())),
         # Баланса меньше суммы заказа — кнопка меняет стиль, а не исчезает.
-        ("user.payment_methods(short balance)", user_kb.payment_methods(order, _methods(), 1)),
-        ("user.payment_methods(no balance)", user_kb.payment_methods(order, _methods(), None)),
         ("user.payment_link", user_kb.payment_link(order)),
         # Ссылку провайдер ещё не выдал — экран обязан собраться без неё.
         ("user.payment_link(no link)", user_kb.payment_link(_order(pay_url=None))),
-        ("user.profile", user_kb.profile(has_promo=True, topup_enabled=True)),
-        ("user.profile(bare)", user_kb.profile(has_promo=False, topup_enabled=False)),
+        ("user.profile", user_kb.profile(has_promo=True)),
+        ("user.profile(bare)", user_kb.profile(has_promo=False)),
         ("user.purchases", user_kb.purchases([order], 1, 5)),
         ("user.simple_back", user_kb.simple_back()),
         ("admin.menu", admin_kb.menu()),
@@ -196,6 +194,9 @@ def _all_keyboards() -> list[tuple[str, InlineKeyboardMarkup]]:
         ("admin.settings", admin_kb.settings([SettingEntry(key="shop_name", value="Shop", title="Название")], 0, 2)),
         ("admin.channels", admin_kb.channels([_channel()])),
         ("admin.admins", admin_kb.admins([Admin(id=1, user_id=BUYER_ID)], [BUYER_ID])),
+        # Палитра цвета категории: каждая кнопка выкрашена в тот стиль, который
+        # предлагает, — то есть проверяет сама себя на допустимость.
+        ("admin.accent_picker", admin_kb.accent_picker("a:cats:0", "a:cat_newaccent:")),
         ("admin.admins(removable)", admin_kb.admins([Admin(id=2, user_id=111)], [BUYER_ID])),
         ("admin.export_menu", admin_kb.export_menu()),
         # Подтверждение — универсальный виджет, но в обходе он получает
@@ -496,7 +497,7 @@ def test_send_credentials_points_at_its_order() -> None:
 def test_payment_methods_keeps_a_way_out() -> None:
     """Экран выбора оплаты без отмены — тупик с замороженными деньгами."""
     order = _order()
-    callbacks = _callbacks(user_kb.payment_methods(order, _methods(), None))
+    callbacks = _callbacks(user_kb.payment_methods(order, _methods()))
 
     assert f"u:cancel:{order.id}" in callbacks
     # Каждый способ оплаты — отдельная кнопка со своим кодом.
@@ -504,47 +505,7 @@ def test_payment_methods_keeps_a_way_out() -> None:
         assert f"u:pay:{order.id}:{method.code}" in callbacks
 
 
-def test_payment_methods_offers_the_balance_when_there_is_one() -> None:
-    """Баланс известен — платить с него можно прямо здесь.
 
-    Оплата с баланса — единственный способ потратить возвращённые деньги.
-    Пропади кнопка, и возврат превращается в счёт, с которого не снять:
-    покупатель платит второй раз картой, а деньги на балансе лежат мёртвым
-    грузом. Проверка парная к `test_payment_methods_hides_the_balance...`:
-    поодиночке каждая проходит и при кнопке «всегда», и при кнопке «никогда».
-    """
-    order = _order()
-    callbacks = _callbacks(user_kb.payment_methods(order, _methods(), 500000))
-
-    assert f"u:pay:{order.id}:balance" in callbacks
-
-
-def test_payment_methods_hides_the_balance_when_there_is_none() -> None:
-    """Баланса нет вовсе (`None`) — предлагать нечего."""
-    order = _order()
-    callbacks = _callbacks(user_kb.payment_methods(order, _methods(), None))
-
-    assert f"u:pay:{order.id}:balance" not in callbacks
-
-
-def test_payment_methods_does_not_recommend_a_short_balance() -> None:
-    """Денег на балансе не хватает — кнопка не выглядит как рабочий путь.
-
-    Зелёный в этом боте значит «то, ради чего пришли». Зелёная кнопка «С
-    баланса», после которой приходит отказ, стоит покупателю нажатия и веры в
-    бота, а магазину — обращения в поддержку. Кнопку не убирают: баланс видно,
-    и это ответ на вопрос «а сколько у меня есть».
-    """
-    order = _order()
-
-    def _balance_button(balance_kop: int) -> InlineKeyboardButton:
-        markup = user_kb.payment_methods(order, _methods(), balance_kop)
-        return _button_with(markup, f"u:pay:{order.id}:balance")
-
-    assert _balance_button(order.total_kop).style == SUCCESS, "хватает — а кнопка не зелёная"
-    assert _balance_button(order.total_kop - 1).style != SUCCESS, (
-        "не хватает, а кнопка зовёт нажать"
-    )
 
 
 def test_payment_link_leads_to_the_payment_page() -> None:

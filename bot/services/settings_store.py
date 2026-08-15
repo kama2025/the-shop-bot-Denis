@@ -61,21 +61,6 @@ DEFAULT_SETTINGS: dict[str, dict] = {
         "value": "2",
         "type": "int",
     },
-    "min_topup_kop": {
-        "title": "Минимальное пополнение баланса, копеек",
-        "value": "5000",
-        "type": "int",
-    },
-    "balance_enabled": {
-        "title": "Оплата с баланса",
-        "value": "1",
-        "type": "bool",
-    },
-    "topup_enabled": {
-        "title": "Пополнение баланса",
-        "value": "1",
-        "type": "bool",
-    },
 }
 
 

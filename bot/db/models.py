@@ -79,34 +79,45 @@ class OrderStatus:
     }
 
 
-class OrderKind:
-    """Зачем создан заказ.
 
-    Пополнение баланса намеренно проходит тем же путём, что и покупка: один
-    механизм подтверждения оплаты вместо двух. Два пути неизбежно разъезжаются,
-    и второй оказывается без проверки суммы.
+
+class CategoryAccent:
+    """Цвет кнопок категории и её товаров.
+
+    Telegram принимает у кнопки ровно четыре стиля — проверено пробой к Bot API,
+    любое другое значение отклоняется целиком: «can't parse InlineKeyboardButton:
+    invalid button style», и сообщение не уходит вообще. Произвольный цвет
+    (`#FF5722`, `accent`, `warning`) задать нельзя — это ограничение Telegram,
+    а не проекта.
+
+    Поэтому «акцентный цвет» — это выбор из четырёх, а не палитра.
     """
 
-    PURCHASE = "purchase"
-    TOPUP = "topup"
+    NEUTRAL = "default"  # серый
+    BLUE = "primary"
+    GREEN = "success"
+    RED = "danger"
 
-
-
-
-
-
-class BalanceTxnKind:
-    TOPUP = "topup"
-    PURCHASE = "purchase"
-    REFUND = "refund"
-    MANUAL = "manual"
+    ALL = (GREEN, BLUE, RED, NEUTRAL)
+    DEFAULT = GREEN
 
     TITLES = {
-        TOPUP: "Пополнение",
-        PURCHASE: "Покупка",
-        REFUND: "Возврат",
-        MANUAL: "Правка администратором",
+        GREEN: "🟢 Зелёный",
+        BLUE: "🔵 Синий",
+        RED: "🔴 Красный",
+        NEUTRAL: "⚪️ Серый",
     }
+
+    @classmethod
+    def normalize(cls, value: str | None) -> str:
+        """Приводит значение из базы к допустимому стилю.
+
+        Возврат к умолчанию, а не отказ: в базе может оказаться что угодно —
+        старая строка, ручная правка, — и категория из-за этого не должна
+        переставать открываться. Проверка стиля живёт в `theme.btn`, но она
+        возбуждает исключение, а здесь нужен именно мягкий откат.
+        """
+        return value if value in cls.ALL else cls.DEFAULT
 
 
 class BroadcastStatus:
@@ -137,7 +148,6 @@ class User(Base):
     last_name: Mapped[str | None] = mapped_column(String(128))
     lang: Mapped[str] = mapped_column(String(8), default="ru", server_default="ru")
 
-    balance_kop: Mapped[int] = mapped_column(BigInteger, default=0, server_default="0")
 
     # Заблокирован магазином (решение админа)
     is_blocked: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
@@ -176,6 +186,11 @@ class Category(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     title: Mapped[str] = mapped_column(String(128), nullable=False)
     description: Mapped[str | None] = mapped_column(Text)
+    # Цвет кнопки категории и кнопок её товаров. Одно из четырёх значений,
+    # которые принимает Telegram, — см. CategoryAccent.
+    accent: Mapped[str] = mapped_column(
+        String(16), default=CategoryAccent.DEFAULT, server_default=CategoryAccent.DEFAULT
+    )
     sort_order: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, server_default="1")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
@@ -257,10 +272,6 @@ class Order(Base):
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     user_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
-    kind: Mapped[str] = mapped_column(
-        String(16), default=OrderKind.PURCHASE, server_default=OrderKind.PURCHASE
-    )
-
     # Выдаётся в момент подтверждения оплаты. До оплаты токена нет — называть
     # покупателю номер, за который ещё не заплачено, незачем.
     token: Mapped[str | None] = mapped_column(String(16))
@@ -406,30 +417,6 @@ class PromoUse(Base):
 
 
 # --- Баланс -----------------------------------------------------------------
-
-
-class BalanceTxn(Base):
-    """Леджер движений баланса.
-
-    Источник правды — сумма движений. Поле `users.balance_kop` это кеш;
-    их сходимость проверяется тестом и кнопкой сверки в админке.
-    """
-
-    __tablename__ = "balance_txns"
-    __table_args__ = (Index("ix_balance_txns_user_id_created_at", "user_id", "created_at"), TABLE_ARGS)
-
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
-    user_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
-    amount_kop: Mapped[int] = mapped_column(BigInteger, nullable=False)
-    balance_after_kop: Mapped[int] = mapped_column(BigInteger, nullable=False)
-    kind: Mapped[str] = mapped_column(String(24), nullable=False)
-    order_id: Mapped[int | None] = mapped_column(BigInteger)
-    admin_id: Mapped[int | None] = mapped_column(BigInteger)
-    comment: Mapped[str | None] = mapped_column(String(255))
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
-
-
-# --- Настраиваемое содержимое ----------------------------------------------
 
 
 class TextEntry(Base):

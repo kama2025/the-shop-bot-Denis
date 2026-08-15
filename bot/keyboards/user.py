@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
-from bot.db.models import Category, Channel, Order, OrderStatus, Product
+from bot.db.models import Category, CategoryAccent, Channel, Order, OrderStatus, Product
 from bot.keyboards.theme import (
     DANGER,
     ICON,
@@ -52,7 +52,13 @@ def main_menu(is_admin: bool = False) -> InlineKeyboardMarkup:
 
 def categories(items: list[Category], page: int, pages: int) -> InlineKeyboardMarkup:
     keyboard = [
-        [btn(category.title, callback_data=f"u:cat:{category.id}:0", style=SUCCESS)]
+        [
+            btn(
+                category.title,
+                callback_data=f"u:cat:{category.id}:0",
+                style=CategoryAccent.normalize(category.accent),
+            )
+        ]
         for category in items
     ]
     pager = pager_row("u:cats:", page, pages)
@@ -68,6 +74,7 @@ def products(
     category_id: int,
     page: int,
     pages: int,
+    accent: str | None = None,
 ) -> InlineKeyboardMarkup:
     """Список товаров категории.
 
@@ -75,6 +82,7 @@ def products(
     здесь. Если курса нет, рублёвая часть просто не выводится — врать числом
     хуже, чем не показать его.
     """
+    style = CategoryAccent.normalize(accent)
     keyboard: list[list[InlineKeyboardButton]] = []
     for product in items:
         price = format_usd(product.price_usd_cents)
@@ -85,7 +93,7 @@ def products(
                 btn(
                     f"{product.title} — {price}",
                     callback_data=f"u:prod:{product.id}",
-                    style=SUCCESS,
+                    style=style,
                 )
             ]
         )
@@ -100,6 +108,7 @@ def product_card(
     product: Product,
     total_kop: int | None,
     back_data: str,
+    accent: str | None = None,
 ) -> InlineKeyboardMarkup:
     """Карточка товара.
 
@@ -114,7 +123,7 @@ def product_card(
                 btn(
                     f"{ICON['buy']} Купить • {format_kop(total_kop)}",
                     callback_data=f"u:buy:{product.id}",
-                    style=SUCCESS,
+                    style=CategoryAccent.normalize(accent),
                 )
             ]
         )
@@ -123,9 +132,7 @@ def product_card(
 
 
 def payment_methods(
-    order: Order,
-    methods: list[PaymentMethod],
-    balance_kop: int | None,
+    order: Order, methods: list[PaymentMethod]
 ) -> InlineKeyboardMarkup:
     keyboard: list[list[InlineKeyboardButton]] = []
     for method in methods:
@@ -135,17 +142,6 @@ def payment_methods(
                     f"{method.emoji} {method.title}",
                     callback_data=f"u:pay:{order.id}:{method.code}",
                     style=method.style,
-                )
-            ]
-        )
-    if balance_kop is not None:
-        enough = balance_kop >= order.total_kop
-        keyboard.append(
-            [
-                btn(
-                    f"{ICON['wallet']} С баланса ({format_kop(balance_kop)})",
-                    callback_data=f"u:pay:{order.id}:balance",
-                    style=SUCCESS if enough else SECONDARY,
                 )
             ]
         )
@@ -168,7 +164,7 @@ def payment_link(order: Order) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
 
-def profile(has_promo: bool, topup_enabled: bool) -> InlineKeyboardMarkup:
+def profile(has_promo: bool) -> InlineKeyboardMarkup:
     keyboard = [
         [btn(f"{ICON['history']} Мои покупки", callback_data="u:purchases:0", style=PRIMARY)],
     ]
@@ -176,11 +172,6 @@ def profile(has_promo: bool, topup_enabled: bool) -> InlineKeyboardMarkup:
     if has_promo:
         promo_row.append(btn("🗑 Снять", callback_data="u:promo_clear", style=DANGER))
     keyboard.append(promo_row)
-    if topup_enabled:
-        keyboard.append(
-            [btn(f"{ICON['wallet']} Пополнить баланс", callback_data="u:topup", style=SUCCESS)]
-        )
-    keyboard.append([btn("📜 История баланса", callback_data="u:balance:0", style=SECONDARY)])
     keyboard.append(nav_row(back_data=None))
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 

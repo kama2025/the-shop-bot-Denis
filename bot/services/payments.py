@@ -25,11 +25,10 @@ from dataclasses import dataclass, field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.db.base import utcnow
-from bot.db.models import BalanceTxnKind, Order, OrderKind, OrderStatus
+from bot.db.models import Order, OrderStatus
 from bot.logger import payment_log
 from bot.payments.base import PayStatus, ProviderError
 from bot.payments.registry import PaymentRegistry
-from bot.repo import balance as balance_repo
 from bot.repo import orders as orders_repo
 from bot.services import delivery as delivery_service
 from bot.services import promo as promo_service
@@ -38,7 +37,6 @@ from bot.services import promo as promo_service
 class Outcome:
     ACCEPTED = "accepted"            # оплата принята, у заказа появился токен
     ALREADY = "already"              # оплата была принята раньше
-    TOPPED_UP = "topped_up"          # баланс пополнен
     PENDING = "pending"              # оплата ещё не пришла
     FAILED = "failed"                # провайдер сказал «отменено»
     MISMATCH = "mismatch"            # сумма или заказ не сошлись
@@ -78,11 +76,7 @@ async def start_payment(
     if provider is None:
         raise ProviderError(f"Способ оплаты недоступен: {method_code}")
 
-    description = (
-        f"Пополнение баланса, заказ #{order.id}"
-        if order.kind == OrderKind.TOPUP
-        else f"{order.product_title}, заказ #{order.id}"
-    )
+    description = f"{order.product_title}, заказ #{order.id}"
 
     invoice = await provider.create_invoice(
         order_id=order.id,
@@ -259,25 +253,7 @@ def _mismatch_reason(order: Order, amount_kop: int | None, payload: str | None) 
 
 
 async def _finalize(session: AsyncSession, order: Order, source: str) -> ConfirmResult:
-    """Завершает оплаченный заказ: пополнение баланса или выдача товара."""
-    if order.kind == OrderKind.TOPUP:
-        await balance_repo.move(
-            session,
-            user_id=order.user_id,
-            amount_kop=order.total_kop,
-            kind=BalanceTxnKind.TOPUP,
-            order_id=order.id,
-            comment=f"Пополнение по заказу #{order.id}",
-        )
-        order.status = OrderStatus.DELIVERED
-        order.delivered_at = utcnow()
-        await session.flush()
-        payment_log.info(
-            "Баланс пополнен",
-            extra={"order_id": order.id, "user_id": order.user_id, "amount_kop": order.total_kop},
-        )
-        return ConfirmResult(Outcome.TOPPED_UP, order=order)
-
+    """Завершает оплаченный заказ: выдаёт токен и просит реквизиты."""
     # Промокод списывается только здесь — после подтверждённой оплаты.
     if order.promo_id:
         consumed = await promo_service.consume(session, order.promo_id, order.user_id, order.id)
@@ -302,59 +278,3 @@ async def _finalize(session: AsyncSession, order: Order, source: str) -> Confirm
     )
 
 
-# --- оплата с внутреннего баланса ------------------------------------------
-
-
-async def pay_with_balance(session: AsyncSession, order_id: int) -> ConfirmResult:
-    """Оплата с внутреннего баланса.
-
-    Идёт по тому же сценарию, но подтверждение мгновенное: списание и перевод
-    заказа в оплаченный происходят в одной транзакции.
-    """
-    order = await orders_repo.get_for_update(session, order_id)
-    if order is None:
-        return ConfirmResult(Outcome.NOT_FOUND)
-    if order.status in (
-        OrderStatus.AWAITING_CREDENTIALS,
-        OrderStatus.IN_WORK,
-        OrderStatus.DELIVERED,
-    ):
-        return ConfirmResult(Outcome.ALREADY, order=order)
-    if order.status not in OrderStatus.OPEN:
-        return ConfirmResult(Outcome.CLOSED, order=order)
-    if order.kind == OrderKind.TOPUP:
-        return ConfirmResult(Outcome.MISMATCH, order=order, detail="Баланс нельзя пополнить с баланса")
-
-    try:
-        await balance_repo.move(
-            session,
-            user_id=order.user_id,
-            amount_kop=-order.total_kop,
-            kind=BalanceTxnKind.PURCHASE,
-            order_id=order.id,
-            comment=f"Оплата заказа #{order.id}",
-        )
-    except balance_repo.InsufficientFunds as exc:
-        return ConfirmResult(Outcome.FAILED, order=order, detail=str(exc))
-
-    order.provider = "balance"
-    order.payment_method = "balance"
-    order.status = OrderStatus.PAID
-    order.paid_at = utcnow()
-    await session.flush()
-
-    await orders_repo.log_payment(
-        session,
-        order_id=order.id,
-        provider="balance",
-        provider_txn_id=None,
-        amount_kop=order.total_kop,
-        status=PayStatus.CONFIRMED,
-        event="balance_charge",
-        raw=None,
-    )
-    payment_log.info(
-        "Оплата с баланса",
-        extra={"order_id": order.id, "user_id": order.user_id, "amount_kop": order.total_kop},
-    )
-    return await _finalize(session, order, "balance")

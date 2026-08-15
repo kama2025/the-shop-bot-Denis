@@ -17,15 +17,6 @@ from bot.payments.platega import PlategaProvider
 
 log = logging.getLogger(__name__)
 
-BALANCE_METHOD = PaymentMethod(
-    provider="balance",
-    code="balance",
-    title="С баланса",
-    emoji="💼",
-    style="primary",
-)
-
-
 class PaymentRegistry:
     def __init__(self, settings: Settings) -> None:
         self._providers: dict[str, PaymentProvider] = {}

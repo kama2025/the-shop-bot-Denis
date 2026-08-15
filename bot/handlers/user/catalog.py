@@ -92,7 +92,9 @@ async def open_category(call: CallbackQuery, session: AsyncSession, **_: object)
     await show(
         call,
         header,
-        user_kb.products(chunk.items, rate_kop, category_id, chunk.page, chunk.pages),
+        user_kb.products(
+            chunk.items, rate_kop, category_id, chunk.page, chunk.pages, category.accent
+        ),
         await header_service.photo(session),
     )
 
@@ -117,6 +119,10 @@ async def open_product(
     rate_kop = await currency_service.current_usd_kop(session)
     photo = await _photo(session, product)
     back = f"u:cat:{product.category_id}:0"
+    # Цвет берётся у категории: карточка товара должна выглядеть продолжением
+    # того списка, из которого в неё зашли.
+    category = await catalog_repo.get_category(session, product.category_id)
+    accent = category.accent if category else None
 
     if not rate_kop:
         # Курса нет вообще. Показываем карточку без цены и без кнопки покупки:
@@ -144,7 +150,7 @@ async def open_product(
     await show(
         call,
         text,
-        user_kb.product_card(product, calc.total_kop, back_data=back),
+        user_kb.product_card(product, calc.total_kop, back_data=back, accent=accent),
         photo,
     )
 

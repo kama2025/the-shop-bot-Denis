@@ -4,6 +4,7 @@ from aiogram.fsm.state import State, StatesGroup
 
 
 class CategorySG(StatesGroup):
+    accent = State()
     title = State()
     description = State()
     edit_title = State()
@@ -88,5 +89,3 @@ class AdminSG(StatesGroup):
 
 class UserAdminSG(StatesGroup):
     search = State()
-    balance_amount = State()
-    balance_comment = State()

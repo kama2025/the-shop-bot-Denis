@@ -12,11 +12,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.config import Settings
 from bot.db.base import utcnow
-from bot.db.models import BalanceTxnKind
 from bot.handlers.admin.common import guard
 from bot.keyboards import admin as admin_kb
 from bot.repo import audit as audit_repo
-from bot.repo import balance as balance_repo
 from bot.repo import orders as orders_repo
 from bot.repo import users as users_repo
 from bot.services import commands as commands_service
@@ -147,18 +145,14 @@ async def _render_user(event, session: AsyncSession, user_id: int) -> None:
         await show(event, "Пользователь не найден.", admin_kb.confirm("noop", "a:users", yes_text="…"))
         return
     summary = await users_repo.user_summary(session, user_id)
-    ledger = await balance_repo.ledger_balance(session, user_id)
 
     lines = [
         f"👤 <b>{html.escape(user.display)}</b>",
         f"🆔 <code>{user.tg_id}</code>",
         f"📅 Первый запуск: {user.created_at.strftime('%d.%m.%Y %H:%M')}",
         f"👀 Последняя активность: {user.last_seen_at.strftime('%d.%m.%Y %H:%M')}",
-        f"💼 Баланс: {format_kop(user.balance_kop)}",
         f"🛒 Покупок: {summary['orders']} на {format_kop(summary['spent_kop'])}",
     ]
-    if ledger != user.balance_kop:
-        lines.append(f"⚠️ Леджер расходится: {format_kop(ledger)}")
     if user.is_blocked:
         lines.append(f"🚫 Заблокирован: {html.escape(user.block_reason or '—')}")
     if user.has_blocked_bot:
@@ -200,92 +194,6 @@ async def user_orders(
         await show(call, "Заказов нет.", admin_kb.confirm("noop", f"a:user:{user_id}", yes_text="…"))
         return
     await show(call, f"🧾 Заказы <code>{user_id}</code>", admin_kb.orders(items, 0, 1, None))
-
-
-@router.callback_query(F.data.startswith("a:user_balance:"))
-async def ask_balance(
-    call: CallbackQuery, actor: Actor, state: FSMContext, **_: object
-) -> None:
-    if not await guard(call, actor):
-        return
-    await call.answer()
-    user_id = int(call.data.split(":")[2])
-    await state.update_data(target_user=user_id)
-    await state.set_state(UserAdminSG.balance_amount)
-    await show(
-        call,
-        "💼 Отправьте сумму со знаком: <code>+500</code> — начислить, "
-        "<code>-500</code> — списать.",
-        admin_kb.confirm("noop", f"a:user:{user_id}", yes_text="…"),
-    )
-
-
-@router.message(UserAdminSG.balance_amount)
-async def change_balance(
-    message: Message, session: AsyncSession, actor: Actor, state: FSMContext, **_: object
-) -> None:
-    if not await guard(message, actor):
-        await state.clear()
-        return
-    raw = (message.text or "").strip()
-    sign = -1 if raw.startswith("-") else 1
-    try:
-        amount = parse_price_to_kop(raw.lstrip("+-")) * sign
-    except PriceParseError as exc:
-        await message.answer(f"Не понял сумму: {exc}")
-        return
-    if amount == 0:
-        await message.answer("Ноль ничего не меняет.")
-        return
-
-    data = await state.get_data()
-    user_id = int(data["target_user"])
-    try:
-        txn = await balance_repo.move(
-            session,
-            user_id=user_id,
-            amount_kop=amount,
-            kind=BalanceTxnKind.MANUAL,
-            admin_id=actor.user_id,
-            comment="Правка администратором",
-        )
-    except balance_repo.InsufficientFunds as exc:
-        await message.answer(f"❌ Нельзя: {exc}")
-        return
-
-    await audit_repo.record(
-        session, actor.user_id, "balance.manual", "user", user_id, {"amount_kop": amount}
-    )
-    await state.clear()
-    await message.answer(
-        f"✅ Баланс <code>{user_id}</code> изменён на {format_kop(amount, with_sign=True)}.\n"
-        f"Стало: {format_kop(txn.balance_after_kop)}"
-    )
-
-
-@router.callback_query(F.data == "a:balance_audit")
-async def balance_audit(
-    call: CallbackQuery, session: AsyncSession, actor: Actor, **_: object
-) -> None:
-    if not await guard(call, actor):
-        return
-    await call.answer("Сверяю…")
-    mismatches = await balance_repo.find_mismatches(session)
-    if not mismatches:
-        text = "🧮 Балансы сошлись: кеш совпадает с леджером у всех пользователей."
-    else:
-        lines = ["⚠️ <b>Расхождения баланса</b>", ""]
-        for tg_id, cached, ledger in mismatches[:20]:
-            lines.append(
-                f"<code>{tg_id}</code>: кеш {format_kop(cached)}, леджер {format_kop(ledger)}"
-            )
-        lines.append("")
-        lines.append("Леджер — источник правды. Поправьте вручную кнопкой «Изменить баланс».")
-        text = "\n".join(lines)
-    await show(call, text, admin_kb.confirm("a:balance_audit", "a:users", yes_text="🔄 Ещё раз"))
-
-
-# --- администраторы ---------------------------------------------------------
 
 
 @router.callback_query(F.data == "a:admins")

@@ -240,7 +240,7 @@ async def do_refund(
     order_id = int(data["order_id"])
     comment = (message.text or "").strip() or "без причины"
 
-    result = await refunds_service.refund_to_balance(session, order_id, actor.user_id, comment)
+    result = await refunds_service.mark_refunded(session, order_id, actor.user_id, comment)
     await state.clear()
     if not result.ok:
         await message.answer(f"❌ Возврат не сделан: {result.detail}")

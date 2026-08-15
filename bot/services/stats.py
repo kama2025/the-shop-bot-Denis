@@ -13,7 +13,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.db.base import utcnow
-from bot.db.models import Order, OrderKind, OrderStatus, User
+from bot.db.models import Order, OrderStatus, User
 
 PAID_STATUSES = (OrderStatus.PAID, OrderStatus.DELIVERED)
 
@@ -79,8 +79,6 @@ async def collect(session: AsyncSession) -> Snapshot:
         ).scalar_one()
     )
 
-    purchases = Order.kind == OrderKind.PURCHASE
-
     snapshot.orders_total = int(
         (await session.execute(select(func.count(Order.id)).where(purchases))).scalar_one()
     )
@@ -88,7 +86,7 @@ async def collect(session: AsyncSession) -> Snapshot:
     paid_row = (
         await session.execute(
             select(func.count(Order.id), func.coalesce(func.sum(Order.total_kop), 0)).where(
-                purchases, Order.status.in_(PAID_STATUSES)
+                Order.status.in_(PAID_STATUSES)
             )
         )
     ).one()
@@ -99,7 +97,7 @@ async def collect(session: AsyncSession) -> Snapshot:
         (
             await session.execute(
                 select(func.count(Order.id)).where(
-                    purchases, Order.status.in_(PAID_STATUSES), Order.paid_at >= today
+                    Order.status.in_(PAID_STATUSES), Order.paid_at >= today
                 )
             )
         ).scalar_one()
@@ -108,7 +106,7 @@ async def collect(session: AsyncSession) -> Snapshot:
         (
             await session.execute(
                 select(func.coalesce(func.sum(Order.total_kop), 0)).where(
-                    purchases, Order.status.in_(PAID_STATUSES), Order.paid_at >= today
+                    Order.status.in_(PAID_STATUSES), Order.paid_at >= today
                 )
             )
         ).scalar_one()
@@ -118,7 +116,7 @@ async def collect(session: AsyncSession) -> Snapshot:
         (
             await session.execute(
                 select(func.coalesce(func.sum(Order.total_kop), 0)).where(
-                    purchases, Order.status.in_(PAID_STATUSES), Order.paid_at >= month
+                    Order.status.in_(PAID_STATUSES), Order.paid_at >= month
                 )
             )
         ).scalar_one()
@@ -164,7 +162,7 @@ async def collect(session: AsyncSession) -> Snapshot:
                 func.coalesce(func.sum(Order.qty), 0),
                 func.coalesce(func.sum(Order.total_kop), 0),
             )
-            .where(purchases, Order.status.in_(PAID_STATUSES))
+            .where(Order.status.in_(PAID_STATUSES))
             .group_by(Order.product_title)
             .order_by(func.sum(Order.qty).desc())
             .limit(5)

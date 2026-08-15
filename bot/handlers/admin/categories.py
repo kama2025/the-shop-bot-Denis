@@ -14,6 +14,7 @@ from bot.keyboards import admin as admin_kb
 from bot.repo import audit as audit_repo
 from bot.repo import catalog as catalog_repo
 from bot.services.access import Actor
+from bot.db.models import CategoryAccent
 from bot.states.admin import CategorySG
 from bot.utils.pagination import paginate
 from bot.utils.render import show
@@ -58,6 +59,7 @@ async def category_card(
         f"Описание: {html.escape(category.description or '—')}\n"
         f"Товаров: {products_count}\n"
         f"Порядок: {category.sort_order}\n"
+        f"Цвет: {CategoryAccent.TITLES.get(CategoryAccent.normalize(category.accent), '—')}\n"
         f"Статус: {'🟢 включена' if category.is_active else '🔴 выключена'}"
     )
     await show(call, text, admin_kb.category_card(category, products_count))
@@ -86,17 +88,97 @@ async def create_category(
         await message.answer("Название должно быть от 1 до 128 символов. Попробуйте ещё раз.")
         return
 
-    category = await catalog_repo.create_category(session, title)
-    await audit_repo.record(session, actor.user_id, "category.create", "category", category.id, {"title": title})
+    # Категория ещё не создаётся: сначала цвет. Создать её здесь и покрасить
+    # следующим шагом значило бы, что брошенный на цвете мастер оставляет
+    # в каталоге категорию, которую никто не заказывал.
+    await state.update_data(new_category_title=title)
+    await state.set_state(CategorySG.accent)
+    await message.answer(
+        f"Название: <b>{html.escape(title)}</b>\n\n"
+        "Выберите <b>цвет</b> категории. Им будут выкрашены и её кнопка, "
+        "и кнопки товаров внутри.\n\n"
+        "<i>Цветов ровно четыре — больше Telegram у кнопок не поддерживает.</i>",
+        reply_markup=admin_kb.accent_picker("a:cats:0", "a:cat_newaccent:"),
+    )
+
+
+@router.callback_query(F.data.startswith("a:cat_newaccent:"), CategorySG.accent)
+async def create_with_accent(
+    call: CallbackQuery, session: AsyncSession, actor: Actor, state: FSMContext, **_: object
+) -> None:
+    if not await guard(call, actor):
+        return
+    accent = CategoryAccent.normalize(call.data.split(":")[2])
+    data = await state.get_data()
+    title = (data.get("new_category_title") or "").strip()
+    if not title:
+        await state.clear()
+        await call.answer("Название потерялось, начните заново", show_alert=True)
+        return
+
+    category = await catalog_repo.create_category(session, title, accent=accent)
+    await audit_repo.record(
+        session, actor.user_id, "category.create", "category", category.id,
+        {"title": title, "accent": accent},
+    )
     await state.clear()
-    await message.answer(f"✅ Категория «{html.escape(title)}» создана.")
+    await call.answer("Категория создана")
 
     items = await catalog_repo.list_categories(session, only_active=False)
     chunk = paginate(items, 0, PER_PAGE)
-    await message.answer(
+    await show(
+        call,
+        f"✅ Категория «{html.escape(title)}» создана — "
+        f"{CategoryAccent.TITLES[accent]}\n\n"
         f"📂 <b>Категории</b> — всего {chunk.total}",
-        reply_markup=admin_kb.categories(chunk.items, chunk.page, chunk.pages),
+        admin_kb.categories(chunk.items, chunk.page, chunk.pages),
     )
+
+
+@router.callback_query(F.data.startswith("a:cat_accent:"))
+async def ask_accent(
+    call: CallbackQuery, session: AsyncSession, actor: Actor, **_: object
+) -> None:
+    """Смена цвета у существующей категории."""
+    if not await guard(call, actor):
+        return
+    category_id = int(call.data.split(":")[2])
+    category = await catalog_repo.get_category(session, category_id)
+    if category is None:
+        await call.answer("Категория удалена", show_alert=True)
+        return
+    await call.answer()
+    await show(
+        call,
+        f"🎨 Цвет категории «{html.escape(category.title)}»\n\n"
+        f"Сейчас: {CategoryAccent.TITLES.get(CategoryAccent.normalize(category.accent), '—')}\n\n"
+        "Им красятся кнопка категории и кнопки товаров внутри.",
+        admin_kb.accent_picker(f"a:cat:{category_id}", f"a:cat_setaccent:{category_id}:"),
+    )
+
+
+@router.callback_query(F.data.startswith("a:cat_setaccent:"))
+async def set_accent(
+    call: CallbackQuery, session: AsyncSession, actor: Actor, **_: object
+) -> None:
+    if not await guard(call, actor):
+        return
+    parts = call.data.split(":")
+    category_id, accent = int(parts[2]), CategoryAccent.normalize(parts[3])
+    category = await catalog_repo.get_category(session, category_id)
+    if category is None:
+        await call.answer("Категория удалена", show_alert=True)
+        return
+
+    before = category.accent
+    category.accent = accent
+    await audit_repo.record(
+        session, actor.user_id, "category.accent", "category", category_id,
+        {"before": before, "after": accent},
+    )
+    await call.answer(f"Цвет: {CategoryAccent.TITLES[accent]}")
+    call.data = f"a:cat:{category_id}"
+    await category_card(call, session, actor)
 
 
 @router.callback_query(F.data.startswith("a:cat_edit:"))
@@ -211,13 +293,11 @@ async def ask_delete(
     # Предупреждение с числами: «внутри что-то есть» без цифр никого не
     # останавливает.
     products = await catalog_repo.count_products_in_category(session, category_id)
-    stock = await catalog_repo.count_stock_in_category(session, category_id)
 
     if products:
         text = (
             f"⚠️ <b>Внутри категории «{html.escape(category.title)}» есть товары.</b>\n\n"
-            f"Товаров: <b>{products}</b>\n"
-            f"Свободных позиций на складе: <b>{stock}</b>\n\n"
+            f"Товаров: <b>{products}</b>\n\n"
             "Категорию с товарами удалить нельзя — сначала перенесите или удалите товары.\n"
             "Если нужно просто убрать её из магазина — выключите."
         )

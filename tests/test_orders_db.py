@@ -7,8 +7,8 @@
 * число, названное покупателю, не меняется под ним, когда меняется курс;
 * оплаченный заказ не закрывается сам по таймауту, пока работа не сделана.
 
-Промокоды и баланс остались в этом же файле: их защита — про одновременные
-запросы, а такое проверяется только на настоящей СУБД.
+Промокоды остались в этом же файле: их защита — про одновременные запросы,
+а такое проверяется только на настоящей СУБД.
 """
 
 from __future__ import annotations
@@ -21,8 +21,7 @@ import pytest
 from sqlalchemy import func, select
 
 from bot.db.base import utcnow
-from bot.db.models import BalanceTxnKind, Order, OrderStatus, PromoCode
-from bot.repo import balance as balance_repo
+from bot.db.models import Order, OrderStatus, PromoCode
 from bot.repo import orders as orders_repo
 from bot.repo import promo as promo_repo
 from bot.repo import rates as rates_repo
@@ -728,55 +727,6 @@ async def test_promo_consume_is_idempotent_per_order(session_factory) -> None:
 # --- Баланс -----------------------------------------------------------------
 
 
-async def test_balance_ledger_matches_cached_field(session_factory) -> None:
-    """Кеш баланса обязан сходиться с леджером — он источник правды."""
-    async with session_factory() as session:
-        user = await make_user(session, balance_kop=0)
-        await session.commit()
-
-        await balance_repo.move(session, user.tg_id, 50000, BalanceTxnKind.TOPUP)
-        await balance_repo.move(session, user.tg_id, -18000, BalanceTxnKind.PURCHASE)
-        await balance_repo.move(session, user.tg_id, 18000, BalanceTxnKind.REFUND)
-        await session.commit()
-
-        await session.refresh(user)
-        assert user.balance_kop == 50000
-        assert await balance_repo.ledger_balance(session, user.tg_id) == 50000
-        assert await balance_repo.find_mismatches(session) == []
 
 
-async def test_balance_cannot_go_negative(session_factory) -> None:
-    async with session_factory() as session:
-        user = await make_user(session, balance_kop=1000)
-        await session.commit()
 
-        with pytest.raises(balance_repo.InsufficientFunds):
-            await balance_repo.move(session, user.tg_id, -5000, BalanceTxnKind.PURCHASE)
-        await session.rollback()
-
-        await session.refresh(user)
-        assert user.balance_kop == 1000
-
-
-async def test_parallel_spending_cannot_overdraw(session_factory) -> None:
-    """Два одновременных списания не должны увести баланс в минус."""
-    async with session_factory() as session:
-        user = await make_user(session, balance_kop=10000)
-        await session.commit()
-        user_id = user.tg_id
-
-    async def spend() -> bool:
-        async with session_factory() as session:
-            try:
-                await balance_repo.move(session, user_id, -8000, BalanceTxnKind.PURCHASE)
-                await session.commit()
-                return True
-            except balance_repo.InsufficientFunds:
-                await session.rollback()
-                return False
-
-    results = await asyncio.gather(spend(), spend())
-    assert sorted(results) == [False, True], f"получили {results}"
-
-    async with session_factory() as session:
-        assert await balance_repo.ledger_balance(session, user_id) == 2000

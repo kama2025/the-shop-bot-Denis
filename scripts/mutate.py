@@ -124,25 +124,6 @@ MUTATIONS: list[Mutation] = [
         guards="два одновременных подтверждения не проводят платёж дважды",
     ),
     Mutation(
-        name="balance-charged-before-paid",
-        path="bot/services/payments.py",
-        anchor="    try:\n"
-        "        await balance_repo.move(\n"
-        "            session,\n"
-        "            user_id=order.user_id,\n"
-        "            amount_kop=-order.total_kop,",
-        replacement="    order.status = OrderStatus.PAID  # МУТАЦИЯ\n"
-        "    await session.flush()\n"
-        "    try:\n"
-        "        await balance_repo.move(\n"
-        "            session,\n"
-        "            user_id=order.user_id,\n"
-        "            amount_kop=-order.total_kop,",
-        tests=["tests/test_payments_db.py"],
-        breaks="заказ помечается оплаченным до списания с баланса",
-        guards="при нехватке средств заказ не остаётся оплаченным",
-    ),
-    Mutation(
         name="rate-frozen-in-order",
         path="bot/services/orders.py",
         anchor="        rate_kop=calc.rate_kop,",
@@ -181,6 +162,15 @@ MUTATIONS: list[Mutation] = [
         tests=["tests/test_search.py::test_one_shared_word_is_not_a_match"],
         breaks="одно общее слово запроса вытаскивает чужой товар",
         guards="«премиум нетфликс» не находит Spotify Premium",
+    ),
+    Mutation(
+        name="category-accent-fallback",
+        path="bot/db/models.py",
+        anchor="        return value if value in cls.ALL else cls.DEFAULT",
+        replacement="        return value  # МУТАЦИЯ",
+        tests=["tests/test_keyboards.py", "tests/test_catalog_accent.py"],
+        breaks="цвет из базы уходит в кнопку без проверки",
+        guards="мусор в поле цвета не роняет клавиатуру целиком",
     ),
     Mutation(
         name="refund-not-twice",
@@ -283,18 +273,7 @@ MUTATIONS: list[Mutation] = [
         breaks="старое сообщение удаляется раньше, чем отправлено новое",
         guards="экран не исчезает у покупателя, если отправка нового упала",
     ),
-    Mutation(
-        name="balance-negative-guard",
-        path="bot/repo/balance.py",
-        anchor="    if new_balance < 0 and not allow_negative:",
-        replacement="    if False:  # МУТАЦИЯ",
-        tests=[
-            "tests/test_orders_db.py::test_balance_cannot_go_negative",
-            "tests/test_orders_db.py::test_parallel_spending_cannot_overdraw",
-        ],
-        breaks="снята защита от ухода баланса в минус",
-        guards="с баланса нельзя списать больше, чем на нём есть",
-    ),
+
 ]
 
 

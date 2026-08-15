@@ -23,6 +23,27 @@ def _header(actor: Actor) -> str:
     return f"🛠 <b>Админ-панель</b>\n<code>{actor.user_id}</code>"
 
 
+def _summary(actor: Actor, snapshot) -> str:
+    """Шапка админки: пользователи, деньги и сколько заказов ждёт человека.
+
+    Два последних числа — единственное, по чему видно, что работа копится:
+    выручка растёт и тогда, когда её никто не делает.
+    """
+    lines = [
+        _header(actor),
+        "",
+        f"👥 Пользователей: {snapshot.users_total} (+{snapshot.users_today} сегодня)",
+        f"💰 Выручка: {format_kop(snapshot.revenue_kop)}",
+    ]
+    if snapshot.orders_awaiting_credentials:
+        lines.append(f"🔑 Ждут логин и пароль: {snapshot.orders_awaiting_credentials}")
+    if snapshot.orders_in_work:
+        lines.append(f"🛠 В работе: {snapshot.orders_in_work}")
+    if not (snapshot.orders_awaiting_credentials or snapshot.orders_in_work):
+        lines.append("✅ Незакрытых заказов нет")
+    return "\n".join(lines)
+
+
 @router.message(Command("admin"))
 async def cmd_admin(
     message: Message, session: AsyncSession, actor: Actor, state: FSMContext, **_: object
@@ -32,12 +53,7 @@ async def cmd_admin(
         return
     await soft_reset(state)
     snapshot = await stats_service.collect(session)
-    text = (
-        f"{_header(actor)}\n\n"
-        f"👥 Пользователей: {snapshot.users_total} (+{snapshot.users_today} сегодня)\n"
-        f"💰 Выручка: {format_kop(snapshot.revenue_kop)}\n"
-        f"📦 Свободных позиций: {snapshot.stock_available}"
-    )
+    text = _summary(actor, snapshot)
     await show(message, text, admin_kb.menu())
 
 
@@ -51,12 +67,7 @@ async def open_menu(
     await soft_reset(state)
     await call.answer()
     snapshot = await stats_service.collect(session)
-    text = (
-        f"{_header(actor)}\n\n"
-        f"👥 Пользователей: {snapshot.users_total} (+{snapshot.users_today} сегодня)\n"
-        f"💰 Выручка: {format_kop(snapshot.revenue_kop)}\n"
-        f"📦 Свободных позиций: {snapshot.stock_available}"
-    )
+    text = _summary(actor, snapshot)
     await show(call, text, admin_kb.menu())
 
 

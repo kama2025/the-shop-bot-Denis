@@ -6,6 +6,7 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from bot.db.models import (
     Admin,
+    CategoryAccent,
     Broadcast,
     Category,
     Channel,
@@ -89,7 +90,7 @@ def categories(items: list[Category], page: int, pages: int) -> InlineKeyboardMa
             btn(
                 f"{toggle_mark(category.is_active)} {category.title}",
                 callback_data=f"a:cat:{category.id}",
-                style=SECONDARY,
+                style=CategoryAccent.normalize(category.accent),
             )
         ]
         for category in items
@@ -113,6 +114,16 @@ def category_card(category: Category, products_count: int) -> InlineKeyboardMark
             [
                 btn(f"{ICON['edit']} Название", callback_data=f"a:cat_edit:{category.id}:title", style=SECONDARY),
                 btn(f"{ICON['edit']} Описание", callback_data=f"a:cat_edit:{category.id}:desc", style=SECONDARY),
+            ],
+            [
+                btn(
+                    f"🎨 Цвет: {CategoryAccent.TITLES.get(CategoryAccent.normalize(category.accent), '')}",
+                    callback_data=f"a:cat_accent:{category.id}",
+                    # Кнопка выкрашена в тот цвет, который задаёт: выбор цвета,
+                    # показанный нейтральным, приходится проверять переходом
+                    # в магазин.
+                    style=CategoryAccent.normalize(category.accent),
+                )
             ],
             [
                 btn(f"{ICON['up']} Выше", callback_data=f"a:cat_move:{category.id}:-1", style=SECONDARY),
@@ -463,7 +474,6 @@ def confirm(yes: str, no: str, yes_text: str = "✅ Да, подтверждаю
 def user_card(user_id: int, is_blocked: bool) -> InlineKeyboardMarkup:
     return _kb(
         [
-            [btn("💼 Изменить баланс", callback_data=f"a:user_balance:{user_id}", style=SUCCESS)],
             [
                 btn(
                     "✅ Разблокировать" if is_blocked else f"{ICON['block']} Заблокировать",
@@ -481,7 +491,6 @@ def users_menu() -> InlineKeyboardMarkup:
     return _kb(
         [
             [btn("🔎 Найти пользователя", callback_data="a:user_search", style=PRIMARY)],
-            [btn("🧮 Сверить балансы", callback_data="a:balance_audit", style=SECONDARY)],
             back_row("a:menu"),
         ]
     )
@@ -521,4 +530,24 @@ def fulfillment_card(order_id: int, buyer_username: str | None) -> InlineKeyboar
     rows.append(
         [btn(f"{ICON['orders']} Открыть заказ", callback_data=f"a:order:{order_id}", style=SECONDARY)]
     )
+    return _kb(rows)
+
+
+def accent_picker(back_data: str, callback_prefix: str) -> InlineKeyboardMarkup:
+    """Выбор цвета категории.
+
+    Каждая кнопка выкрашена в тот цвет, который предлагает, — палитра
+    показывает сама себя. Значений ровно четыре: больше Telegram не принимает.
+    """
+    rows = [
+        [
+            btn(
+                CategoryAccent.TITLES[accent],
+                callback_data=f"{callback_prefix}{accent}",
+                style=accent,
+            )
+        ]
+        for accent in CategoryAccent.ALL
+    ]
+    rows.append(back_row(back_data))
     return _kb(rows)

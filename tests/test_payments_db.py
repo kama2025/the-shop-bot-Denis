@@ -19,9 +19,8 @@ from datetime import timedelta
 import pytest
 
 from bot.db.base import utcnow
-from bot.db.models import Order, OrderKind, OrderStatus
+from bot.db.models import Order, OrderStatus
 from bot.payments.base import Invoice, PaymentMethod, PayStatus, ProviderError, StatusResult
-from bot.repo import balance as balance_repo
 from bot.repo import orders as orders_repo
 from bot.services import orders as orders_service
 from bot.services import payments as payments_service
@@ -431,147 +430,11 @@ async def test_tokens_of_two_orders_differ(session_factory) -> None:
 # --- пополнение баланса -----------------------------------------------------
 
 
-async def test_topup_skips_credentials(session_factory) -> None:
-    """Пополнение баланса идёт мимо реквизитов: сразу выполнено, токена нет.
-
-    Пополнение проходит тем же подтверждением, что и покупка, — и именно
-    поэтому важно, что на выходе оно ведёт себя иначе: работы над аккаунтом
-    нет, просить логин с паролем не за что.
-    """
-    async with session_factory() as session:
-        user = await make_user(session)
-        order = Order(
-            user_id=user.tg_id,
-            kind=OrderKind.TOPUP,
-            product_title="Пополнение баланса",
-            qty=1,
-            unit_price_kop=50000,
-            subtotal_kop=50000,
-            total_kop=50000,
-            provider="fake",
-            payment_method="fake:card",
-            provider_txn_id="txn-topup",
-            status=OrderStatus.PENDING,
-            reserve_expires_at=utcnow() + timedelta(minutes=20),
-        )
-        session.add(order)
-        await session.commit()
-
-        provider = FakeProvider()
-        registry = _confirmed(provider, order)
-
-        first = await payments_service.confirm_order(session, registry, order.id, "callback")
-        await session.commit()
-        assert first.outcome == Outcome.TOPPED_UP
-        assert first.accepted_now is False, "у пополнения нельзя просить реквизиты"
-
-        await session.refresh(order)
-        assert order.status == OrderStatus.DELIVERED
-        assert order.token is None, "пополнению токен не нужен"
-
-        # Повторы не должны пополнить баланс второй раз.
-        for _ in range(3):
-            again = await payments_service.confirm_order(session, registry, order.id, "poller")
-            await session.commit()
-            assert again.outcome == Outcome.ALREADY
-
-        assert await balance_repo.ledger_balance(session, user.tg_id) == 50000
-        await session.refresh(user)
-        assert user.balance_kop == 50000
-
 
 # --- оплата с баланса -------------------------------------------------------
 
 
-async def test_balance_payment_issues_token_and_charges_once(session_factory) -> None:
-    """Оплата с баланса доводит заказ до реквизитов и списывает ровно один раз.
 
-    Путь другой, но результат обязан совпадать с оплатой через провайдера:
-    иначе у магазина появится второй способ выдать токен — со своими правилами.
-    """
-    async with session_factory() as session:
-        user = await make_user(session, balance_kop=300_000)
-        order, _, _ = await _make_pending_order(session, user=user)
-        order.status = OrderStatus.NEW  # оплату с баланса выбирают до счёта
-        await session.commit()
-
-        result = await payments_service.pay_with_balance(session, order.id)
-        await session.commit()
-
-        assert result.outcome == Outcome.ACCEPTED
-        assert result.accepted_now is True
-        await session.refresh(order)
-        assert order.status == OrderStatus.AWAITING_CREDENTIALS
-        assert tokens.is_valid(order.token)
-        token_after_first = order.token
-
-        for _ in range(3):
-            again = await payments_service.pay_with_balance(session, order.id)
-            await session.commit()
-            assert again.outcome == Outcome.ALREADY
-            assert again.accepted_now is False
-
-        await session.refresh(order)
-        assert order.token == token_after_first, "повторная оплата перевыдала токен"
-
-        await session.refresh(user)
-        assert user.balance_kop == 300_000 - TOTAL_KOP
-        assert await balance_repo.ledger_balance(session, user.tg_id) == 300_000 - TOTAL_KOP
-        # Одно списание — одна запись в журнале платежей.
-        assert len(await orders_repo.payments_of(session, order.id)) == 1
-
-
-async def test_balance_payment_refuses_when_short(session_factory) -> None:
-    """Не хватило денег — ни токена, ни смены статуса, ни движения баланса."""
-    async with session_factory() as session:
-        user = await make_user(session, balance_kop=1000)
-        order, _, _ = await _make_pending_order(session, user=user)
-        order.status = OrderStatus.NEW
-        await session.commit()
-
-        result = await payments_service.pay_with_balance(session, order.id)
-        await session.rollback()
-
-        assert result.outcome == Outcome.FAILED
-        assert result.accepted_now is False
-        await session.refresh(order)
-        assert order.status == OrderStatus.NEW
-        assert order.token is None
-        await session.refresh(user)
-        assert user.balance_kop == 1000
-        assert await balance_repo.ledger_balance(session, user.tg_id) == 1000
-
-
-async def test_topup_cannot_be_paid_from_balance(session_factory) -> None:
-    """Пополнить баланс с баланса нельзя.
-
-    Без этой отсечки заказ на пополнение списал бы сумму и тут же вернул её
-    обратно, оставив «выполненное» пополнение, за которым нет живых денег.
-    """
-    async with session_factory() as session:
-        user = await make_user(session, balance_kop=100_000)
-        order = Order(
-            user_id=user.tg_id,
-            kind=OrderKind.TOPUP,
-            product_title="Пополнение баланса",
-            qty=1,
-            unit_price_kop=50000,
-            subtotal_kop=50000,
-            total_kop=50000,
-            status=OrderStatus.NEW,
-            reserve_expires_at=utcnow() + timedelta(minutes=20),
-        )
-        session.add(order)
-        await session.commit()
-
-        result = await payments_service.pay_with_balance(session, order.id)
-        await session.commit()
-
-        assert result.outcome == Outcome.MISMATCH
-        await session.refresh(order)
-        assert order.status == OrderStatus.NEW
-        await session.refresh(user)
-        assert user.balance_kop == 100_000
 
 
 # --- то, что пережило мутационную проверку ----------------------------------
@@ -655,32 +518,4 @@ async def test_two_confirmations_at_once_accept_only_one(session_factory) -> Non
         assert order.token
 
 
-async def test_failed_balance_payment_leaves_no_trace_of_payment(session_factory) -> None:
-    """Нехватка денег не должна оставить заказ помеченным оплаченным.
 
-    `InsufficientFunds` перехватывается внутри `pay_with_balance` и наружу не
-    уходит, поэтому сессия спокойно коммитится. Если статус успели поставить
-    до списания, заказ останется оплаченным без единой копейки — и уйдёт
-    в работу бесплатно.
-
-    Проверяется именно СОХРАНЁННОЕ состояние, в отдельной сессии: до коммита
-    поломка выглядит одинаково в обоих вариантах кода.
-    """
-    async with session_factory() as session:
-        user = await make_user(session, tg_id=4242, balance_kop=1000)
-        order, _, _ = await _make_pending_order(session, user=user)
-        order.status = OrderStatus.NEW
-        await session.commit()
-        order_id, user_id = order.id, user.tg_id
-
-    async with session_factory() as session:
-        result = await payments_service.pay_with_balance(session, order_id)
-        await session.commit()
-        assert result.outcome == Outcome.FAILED
-
-    async with session_factory() as session:
-        order = await orders_repo.get(session, order_id)
-        assert order.status == OrderStatus.NEW, "заказ помечен оплаченным без оплаты"
-        assert order.token is None
-        assert order.paid_at is None
-        assert await balance_repo.ledger_balance(session, user_id) == 1000

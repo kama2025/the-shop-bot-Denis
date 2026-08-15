@@ -5,7 +5,7 @@ from __future__ import annotations
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from bot.db.models import Category, Product
+from bot.db.models import Category, CategoryAccent, Product
 from bot.services import search as search_service
 
 
@@ -25,12 +25,20 @@ async def get_category(session: AsyncSession, category_id: int) -> Category | No
 
 
 async def create_category(
-    session: AsyncSession, title: str, description: str | None = None
+    session: AsyncSession,
+    title: str,
+    description: str | None = None,
+    accent: str | None = None,
 ) -> Category:
     next_order = (
         await session.execute(select(func.coalesce(func.max(Category.sort_order), 0)))
     ).scalar_one()
-    category = Category(title=title, description=description, sort_order=int(next_order) + 10)
+    category = Category(
+        title=title,
+        description=description,
+        accent=CategoryAccent.normalize(accent),
+        sort_order=int(next_order) + 10,
+    )
     session.add(category)
     await session.flush()
     return category
@@ -46,20 +54,6 @@ async def count_products_in_category(
     stmt = select(func.count(Product.id)).where(Product.category_id == category_id)
     if only_active:
         stmt = stmt.where(Product.is_active.is_(True))
-    return int((await session.execute(stmt)).scalar_one())
-
-
-async def count_stock_in_category(session: AsyncSession, category_id: int) -> int:
-    """Сколько свободных позиций склада лежит внутри категории.
-
-    Нужно, чтобы предупредить админа перед удалением: «внутри 3 товара и
-    47 позиций».
-    """
-    stmt = (
-        select(func.count(StockItem.id))
-        .join(Product, Product.id == StockItem.product_id)
-        .where(Product.category_id == category_id, StockItem.status == StockStatus.AVAILABLE)
-    )
     return int((await session.execute(stmt)).scalar_one())
 
 

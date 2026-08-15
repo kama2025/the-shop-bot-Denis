@@ -136,10 +136,8 @@ async def _show_payment_choice(
     )
 
     methods = registry.methods()
-    balance_enabled = await settings_store.get_bool(session, "balance_enabled", True)
-    balance = user.balance_kop if balance_enabled else None
 
-    if not methods and balance is None:
+    if not methods:
         await show(
             call,
             text + "\n\n⚠️ Способы оплаты пока не настроены. Напишите в поддержку.",
@@ -150,7 +148,7 @@ async def _show_payment_choice(
     await show(
         call,
         text,
-        user_kb.payment_methods(order, methods, balance),
+        user_kb.payment_methods(order, methods),
         await header_service.photo(session),
     )
 
@@ -178,12 +176,6 @@ async def choose_method(
         return
     if not orders_service.is_payable(order):
         await call.answer("Заказ уже закрыт", show_alert=True)
-        return
-
-    if method_code == "balance":
-        await call.answer()
-        result = await payments_service.pay_with_balance(session, order.id)
-        await _present_result(call, session, bot, state, result)
         return
 
     try:
