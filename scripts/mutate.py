@@ -184,6 +184,15 @@ MUTATIONS: list[Mutation] = [
         guards="деньги не возвращаются покупателю по два раза",
     ),
     Mutation(
+        name="admin-header-fields",
+        path="bot/services/stats.py",
+        anchor='    orders_awaiting_credentials: int = 0',
+        replacement='    orders_awaiting_credentials_RENAMED: int = 0  # МУТАЦИЯ',
+        tests=["tests/test_stats_db.py"],
+        breaks="поле снимка переименовано — шапка админки обращается к несуществующему",
+        guards="админ-панель открывается, а не падает молча в журнал",
+    ),
+    Mutation(
         name="access-default-deny",
         path="bot/services/access.py",
         anchor="    return is_admin is True",

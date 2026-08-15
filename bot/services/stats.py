@@ -80,7 +80,7 @@ async def collect(session: AsyncSession) -> Snapshot:
     )
 
     snapshot.orders_total = int(
-        (await session.execute(select(func.count(Order.id)).where(purchases))).scalar_one()
+        (await session.execute(select(func.count(Order.id)))).scalar_one()
     )
 
     paid_row = (
