@@ -176,9 +176,9 @@ MUTATIONS: list[Mutation] = [
         name="refund-not-twice",
         path="bot/services/refunds.py",
         anchor="    if order.status == OrderStatus.REFUNDED:\n"
-        '        return RefundResult(False, detail="Возврат по этому заказу уже сделан")',
+        '        return RefundResult(False, detail="Возврат по этому заказу уже оформлен")',
         replacement="    if False:  # МУТАЦИЯ\n"
-        '        return RefundResult(False, detail="Возврат по этому заказу уже сделан")',
+        '        return RefundResult(False, detail="Возврат по этому заказу уже оформлен")',
         tests=["tests/test_refunds_db.py"],
         breaks="возврат по одному заказу проходит дважды",
         guards="деньги не возвращаются покупателю по два раза",
