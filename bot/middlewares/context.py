@@ -1,4 +1,4 @@
-"""Сессия базы, пользователь и роль — один раз на обновление.
+"""Сессия базы, пользователь и признак администратора — раз на обновление.
 
 Одна сессия на всё обновление даёт две вещи: хендлер и сервисы работают в одной
 транзакции (иначе резерв склада и создание заказа окажутся в разных, и половина
@@ -52,7 +52,7 @@ class ContextMiddleware(BaseMiddleware):
             else:
                 data["user"] = None
                 data["is_new_user"] = False
-                data["actor"] = Actor(user_id=0, role=None)
+                data["actor"] = Actor(user_id=0, is_admin=False)
 
             result = await handler(event, data)
             await session.commit()

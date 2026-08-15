@@ -6,7 +6,6 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from bot.db.models import (
     Admin,
-    AdminRole,
     DeliveryType,
     Broadcast,
     Category,
@@ -47,7 +46,11 @@ def back_row(back_data: str) -> list[InlineKeyboardButton]:
     ]
 
 
-def menu(is_owner: bool) -> InlineKeyboardMarkup:
+def menu() -> InlineKeyboardMarkup:
+    """Меню админ-панели.
+
+    Ролей нет — все администраторы видят одно и то же.
+    """
     rows = [
         [
             btn(f"{ICON['catalog']} Категории", callback_data="a:cats:0", style=PRIMARY),
@@ -61,23 +64,20 @@ def menu(is_owner: bool) -> InlineKeyboardMarkup:
             btn(f"{ICON['users']} Пользователи", callback_data="a:users", style=PRIMARY),
             btn(f"{ICON['export']} Выгрузка", callback_data="a:export", style=PRIMARY),
         ],
+        [
+            btn(f"{ICON['promo']} Промокоды", callback_data="a:promos:0", style=SUCCESS),
+            btn(f"{ICON['texts']} Тексты", callback_data="a:texts:0", style=SUCCESS),
+        ],
+        [
+            btn(f"{ICON['settings']} Настройки", callback_data="a:settings:0", style=SUCCESS),
+            btn(f"{ICON['channels']} Каналы", callback_data="a:channels", style=SUCCESS),
+        ],
+        [
+            btn("👑 Администраторы", callback_data="a:admins", style=DANGER),
+            btn("📜 Журнал", callback_data="a:audit", style=SECONDARY),
+        ],
+        [btn(f"{ICON['home']} В магазин", callback_data="u:menu", style=SECONDARY)],
     ]
-    if is_owner:
-        rows += [
-            [
-                btn(f"{ICON['promo']} Промокоды", callback_data="a:promos:0", style=SUCCESS),
-                btn(f"{ICON['texts']} Тексты", callback_data="a:texts:0", style=SUCCESS),
-            ],
-            [
-                btn(f"{ICON['settings']} Настройки", callback_data="a:settings:0", style=SUCCESS),
-                btn(f"{ICON['channels']} Каналы", callback_data="a:channels", style=SUCCESS),
-            ],
-            [
-                btn("👑 Администраторы", callback_data="a:admins", style=DANGER),
-                btn("📜 Журнал", callback_data="a:audit", style=SECONDARY),
-            ],
-        ]
-    rows.append([btn(f"{ICON['home']} В магазин", callback_data="u:menu", style=SECONDARY)])
     return _kb(rows)
 
 
@@ -516,10 +516,10 @@ def channels(items: list[Channel]) -> InlineKeyboardMarkup:
 def admins(items: list[Admin], owner_ids: list[int]) -> InlineKeyboardMarkup:
     rows = []
     for admin in items:
-        title = f"{AdminRole.TITLES.get(admin.role, admin.role)} · {admin.user_id}"
+        title = f"🛠 {admin.user_id}"
         row = [btn(title, callback_data="noop", style=SECONDARY)]
-        # Владельца из окружения удалить нельзя — иначе магазин остаётся без
-        # доступа, и починить его можно только правкой базы руками.
+        # Администратора из окружения удалить нельзя — иначе магазин остаётся
+        # без доступа, и починить его можно только правкой базы руками.
         if admin.user_id not in owner_ids:
             row.append(btn(ICON["delete"], callback_data=f"a:admin_del:{admin.user_id}", style=DANGER))
         rows.append(row)

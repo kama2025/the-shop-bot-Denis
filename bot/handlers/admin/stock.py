@@ -26,14 +26,13 @@ from bot.utils.render import show
 
 router = Router(name="admin.stock")
 
-SECTION = "stock"
 
 
 @router.callback_query(F.data.startswith("a:stock:"))
 async def stock_card(
     call: CallbackQuery, session: AsyncSession, actor: Actor, **_: object
 ) -> None:
-    if not await guard(call, actor, SECTION, "view"):
+    if not await guard(call, actor):
         return
     await call.answer()
     product_id = int(call.data.split(":")[2])
@@ -74,7 +73,7 @@ async def stock_card(
 async def ask_items(
     call: CallbackQuery, session: AsyncSession, actor: Actor, state: FSMContext, **_: object
 ) -> None:
-    if not await guard(call, actor, SECTION, "create"):
+    if not await guard(call, actor):
         return
     await call.answer()
     product_id = int(call.data.split(":")[2])
@@ -137,7 +136,7 @@ async def ask_items(
 async def preview_items(
     message: Message, session: AsyncSession, actor: Actor, state: FSMContext, **_: object
 ) -> None:
-    if not await guard(message, actor, SECTION, "create"):
+    if not await guard(message, actor):
         await state.clear()
         return
 
@@ -177,7 +176,7 @@ async def preview_items(
 async def collect_file(
     message: Message, session: AsyncSession, actor: Actor, state: FSMContext, **_: object
 ) -> None:
-    if not await guard(message, actor, SECTION, "create"):
+    if not await guard(message, actor):
         await state.clear()
         return
 
@@ -226,7 +225,7 @@ async def commit_files(
     bot: Bot,
     **_: object,
 ) -> None:
-    if not await guard(call, actor, SECTION, "create"):
+    if not await guard(call, actor):
         return
     data = await state.get_data()
     files = data.get("files") or []
@@ -280,7 +279,7 @@ async def commit_items(
     bot: Bot,
     **_: object,
 ) -> None:
-    if not await guard(call, actor, SECTION, "create"):
+    if not await guard(call, actor):
         return
     data = await state.get_data()
     items = data.get("items") or []
@@ -315,7 +314,7 @@ async def commit_items(
 async def batch_card(
     call: CallbackQuery, session: AsyncSession, actor: Actor, **_: object
 ) -> None:
-    if not await guard(call, actor, SECTION, "view"):
+    if not await guard(call, actor):
         return
     await call.answer()
     batch_id = int(call.data.split(":")[2])
@@ -338,7 +337,7 @@ async def batch_card(
 async def ask_reject(
     call: CallbackQuery, actor: Actor, state: FSMContext, **_: object
 ) -> None:
-    if not await guard(call, actor, SECTION, "act"):
+    if not await guard(call, actor):
         return
     await call.answer()
     batch_id = int(call.data.split(":")[2])
@@ -355,7 +354,7 @@ async def ask_reject(
 async def do_reject(
     message: Message, session: AsyncSession, actor: Actor, state: FSMContext, **_: object
 ) -> None:
-    if not await guard(message, actor, SECTION, "act"):
+    if not await guard(message, actor):
         await state.clear()
         return
     reason = (message.text or "").strip() or "без причины"
@@ -378,7 +377,7 @@ async def do_reject(
 async def purge_defective(
     call: CallbackQuery, session: AsyncSession, actor: Actor, **_: object
 ) -> None:
-    if not await guard(call, actor, SECTION, "act"):
+    if not await guard(call, actor):
         return
     product_id = int(call.data.split(":")[2])
     removed = await stock_repo.purge_defective(session, product_id)

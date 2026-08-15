@@ -8,7 +8,7 @@ from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.db.base import utcnow
-from bot.db.models import Admin, AdminRole, Order, OrderStatus, User
+from bot.db.models import Admin, Order, OrderStatus, User
 
 
 async def get_user(session: AsyncSession, tg_id: int) -> User | None:
@@ -123,7 +123,7 @@ async def user_summary(session: AsyncSession, tg_id: int) -> dict:
 
 
 async def list_admins(session: AsyncSession) -> list[Admin]:
-    result = await session.execute(select(Admin).order_by(Admin.role, Admin.created_at))
+    result = await session.execute(select(Admin).order_by(Admin.created_at))
     return list(result.scalars().all())
 
 
@@ -132,14 +132,11 @@ async def get_admin(session: AsyncSession, user_id: int) -> Admin | None:
     return result.scalar_one_or_none()
 
 
-async def add_admin(
-    session: AsyncSession, user_id: int, role: str, added_by: int | None
-) -> Admin:
+async def add_admin(session: AsyncSession, user_id: int, added_by: int | None) -> Admin:
     existing = await get_admin(session, user_id)
     if existing is not None:
-        existing.role = role
         return existing
-    admin = Admin(user_id=user_id, role=role, added_by=added_by)
+    admin = Admin(user_id=user_id, added_by=added_by)
     session.add(admin)
     await session.flush()
     return admin
@@ -150,18 +147,15 @@ async def remove_admin(session: AsyncSession, user_id: int) -> None:
 
 
 async def ensure_owners(session: AsyncSession, owner_ids: list[int]) -> None:
-    """Синхронизирует владельцев из окружения.
+    """Восстанавливает администраторов из окружения.
 
-    Владелец задаётся переменной `OWNER_IDS` и восстанавливается при каждом
+    Список задаётся переменной `OWNER_IDS` и восстанавливается при каждом
     старте: иначе неудачная правка в админке однажды оставит магазин без
     единого администратора, и починить его будет нечем.
     """
     for owner_id in owner_ids:
-        admin = await get_admin(session, owner_id)
-        if admin is None:
-            session.add(Admin(user_id=owner_id, role=AdminRole.OWNER, added_by=None))
-        elif admin.role != AdminRole.OWNER:
-            admin.role = AdminRole.OWNER
+        if await get_admin(session, owner_id) is None:
+            session.add(Admin(user_id=owner_id, added_by=None))
     await session.flush()
 
 

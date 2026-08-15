@@ -1,54 +1,54 @@
-"""Права доступа: четыре двери и отказ по умолчанию."""
+"""Права доступа.
+
+Ролей больше нет, дверь одна. Проверяется главное свойство: умолчание — отказ.
+Всё, что не является явным `True`, не проходит.
+"""
 
 from __future__ import annotations
 
 import pytest
 
-from bot.db.models import AdminRole
-from bot.services.access import DOORS, PERMISSIONS, allows
-
-OWNER_ONLY_SECTIONS = ("promo", "balance", "texts", "settings", "channels", "admins", "audit")
-SHARED_SECTIONS = ("categories", "products", "stock", "orders", "broadcast", "users", "export")
+from bot.services.access import Actor, allows
 
 
-@pytest.mark.parametrize("section", OWNER_ONLY_SECTIONS)
-@pytest.mark.parametrize("door", DOORS)
-def test_admin_cannot_touch_owner_sections(section: str, door: str) -> None:
-    """Проверяем каждую дверь отдельно.
+def test_admin_passes():
+    assert allows(True) is True
 
-    Защита на трёх дверях из четырёх — это дыра: список утекает молча, потому
-    что кнопки в интерфейсе нет, а callback-запрос отправить может кто угодно.
+
+def test_not_admin_denied():
+    assert allows(False) is False
+
+
+def test_missing_flag_denied():
+    """`None` из базы означает «записи нет», а не «разрешено»."""
+    assert allows(None) is False
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        1,          # истинное число
+        "admin",    # непустая строка
+        [1],        # непустой список
+        object(),   # что угодно
+    ],
+)
+def test_truthy_but_not_true_denied(value):
+    """Истинное значение — не то же самое, что признак администратора.
+
+    Проверка написана как `is True`, а не как `if is_admin`. Разница видна
+    ровно здесь: строка «admin» истинна, но администратором не делает. Если
+    однажды в поле попадёт что-то из внешнего источника, отказ должен остаться
+    отказом.
     """
-    assert allows(AdminRole.ADMIN, section, door) is False
-    assert allows(AdminRole.OWNER, section, door) is True
+    assert allows(value) is False
 
 
-@pytest.mark.parametrize("section", SHARED_SECTIONS)
-def test_admin_can_work_in_shared_sections(section: str) -> None:
-    for door in ("view", "list", "act"):
-        assert allows(AdminRole.ADMIN, section, door) is True
+def test_actor_defaults_to_denied():
+    """Актор без явного признака — не администратор.
 
-
-@pytest.mark.parametrize("section", [*OWNER_ONLY_SECTIONS, *SHARED_SECTIONS])
-@pytest.mark.parametrize("door", DOORS)
-def test_stranger_is_denied_everywhere(section: str, door: str) -> None:
-    assert allows(None, section, door) is False
-    assert allows("", section, door) is False
-    assert allows("superuser", section, door) is False
-
-
-def test_unknown_section_is_denied() -> None:
-    """Ветка else, ставящая «разрешено», открывает то, что должна закрывать."""
-    assert allows(AdminRole.OWNER, "secret_backdoor", "act") is False
-    assert allows(AdminRole.ADMIN, "secret_backdoor", "act") is False
-
-
-def test_unknown_door_is_denied() -> None:
-    assert allows(AdminRole.OWNER, "orders", "delete_everything") is False
-
-
-def test_every_section_declares_all_four_doors() -> None:
-    """Незаявленная дверь — это дыра, которую не видно при чтении таблицы."""
-    for section, doors in PERMISSIONS.items():
-        missing = set(DOORS) - set(doors)
-        assert not missing, f"у раздела {section} не описаны двери: {sorted(missing)}"
+    Значение по умолчанию решает, что произойдёт, если кто-то создаст `Actor`
+    и забудет передать признак. Оно должно закрывать, а не открывать.
+    """
+    assert Actor(user_id=123).is_admin is False
+    assert allows(Actor(user_id=123).is_admin) is False

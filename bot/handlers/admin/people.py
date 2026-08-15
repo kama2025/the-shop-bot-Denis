@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.config import Settings
 from bot.db.base import utcnow
-from bot.db.models import AdminRole, BalanceTxnKind
+from bot.db.models import BalanceTxnKind
 from bot.handlers.admin.common import guard
 from bot.keyboards import admin as admin_kb
 from bot.repo import audit as audit_repo
@@ -35,7 +35,7 @@ router = Router(name="admin.people")
 
 @router.callback_query(F.data == "a:stats")
 async def stats(call: CallbackQuery, session: AsyncSession, actor: Actor, **_: object) -> None:
-    if not await guard(call, actor, "stats", "view"):
+    if not await guard(call, actor):
         return
     await call.answer()
     snapshot = await stats_service.collect(session)
@@ -56,7 +56,7 @@ async def stats(call: CallbackQuery, session: AsyncSession, actor: Actor, **_: o
 
 @router.callback_query(F.data == "a:export")
 async def export_menu(call: CallbackQuery, actor: Actor, **_: object) -> None:
-    if not await guard(call, actor, "export", "list"):
+    if not await guard(call, actor):
         return
     await call.answer()
     await show(call, "📤 <b>Выгрузка заказов в XLSX</b>", admin_kb.export_menu())
@@ -66,7 +66,7 @@ async def export_menu(call: CallbackQuery, actor: Actor, **_: object) -> None:
 async def do_export(
     call: CallbackQuery, session: AsyncSession, actor: Actor, **_: object
 ) -> None:
-    if not await guard(call, actor, "export", "act"):
+    if not await guard(call, actor):
         return
     kind = call.data.split("_", 1)[1]
     await call.answer("Собираю файл…")
@@ -93,7 +93,7 @@ async def do_export(
 
 @router.callback_query(F.data == "a:users")
 async def users_menu(call: CallbackQuery, actor: Actor, **_: object) -> None:
-    if not await guard(call, actor, "users", "list"):
+    if not await guard(call, actor):
         return
     await call.answer()
     await show(call, "👥 <b>Пользователи</b>", admin_kb.users_menu())
@@ -101,7 +101,7 @@ async def users_menu(call: CallbackQuery, actor: Actor, **_: object) -> None:
 
 @router.callback_query(F.data == "a:user_search")
 async def ask_user(call: CallbackQuery, actor: Actor, state: FSMContext, **_: object) -> None:
-    if not await guard(call, actor, "users", "list"):
+    if not await guard(call, actor):
         return
     await call.answer()
     await state.set_state(UserAdminSG.search)
@@ -116,7 +116,7 @@ async def ask_user(call: CallbackQuery, actor: Actor, state: FSMContext, **_: ob
 async def do_user_search(
     message: Message, session: AsyncSession, actor: Actor, state: FSMContext, **_: object
 ) -> None:
-    if not await guard(message, actor, "users", "list"):
+    if not await guard(message, actor):
         await state.clear()
         return
     await state.set_state(None)
@@ -135,7 +135,7 @@ async def do_user_search(
 
 @router.callback_query(F.data.startswith("a:user:"))
 async def user_card(call: CallbackQuery, session: AsyncSession, actor: Actor, **_: object) -> None:
-    if not await guard(call, actor, "users", "view"):
+    if not await guard(call, actor):
         return
     await call.answer()
     await _render_user(call, session, int(call.data.split(":")[2]))
@@ -171,7 +171,7 @@ async def _render_user(event, session: AsyncSession, user_id: int) -> None:
 async def toggle_block(
     call: CallbackQuery, session: AsyncSession, actor: Actor, **_: object
 ) -> None:
-    if not await guard(call, actor, "users", "act"):
+    if not await guard(call, actor):
         return
     user_id = int(call.data.split(":")[2])
     user = await users_repo.get_user(session, user_id)
@@ -191,7 +191,7 @@ async def toggle_block(
 async def user_orders(
     call: CallbackQuery, session: AsyncSession, actor: Actor, **_: object
 ) -> None:
-    if not await guard(call, actor, "orders", "list"):
+    if not await guard(call, actor):
         return
     await call.answer()
     user_id = int(call.data.split(":")[2])
@@ -206,7 +206,7 @@ async def user_orders(
 async def ask_balance(
     call: CallbackQuery, actor: Actor, state: FSMContext, **_: object
 ) -> None:
-    if not await guard(call, actor, "balance", "act"):
+    if not await guard(call, actor):
         return
     await call.answer()
     user_id = int(call.data.split(":")[2])
@@ -224,7 +224,7 @@ async def ask_balance(
 async def change_balance(
     message: Message, session: AsyncSession, actor: Actor, state: FSMContext, **_: object
 ) -> None:
-    if not await guard(message, actor, "balance", "act"):
+    if not await guard(message, actor):
         await state.clear()
         return
     raw = (message.text or "").strip()
@@ -267,7 +267,7 @@ async def change_balance(
 async def balance_audit(
     call: CallbackQuery, session: AsyncSession, actor: Actor, **_: object
 ) -> None:
-    if not await guard(call, actor, "balance", "view"):
+    if not await guard(call, actor):
         return
     await call.answer("Сверяю…")
     mismatches = await balance_repo.find_mismatches(session)
@@ -292,7 +292,7 @@ async def balance_audit(
 async def list_admins(
     call: CallbackQuery, session: AsyncSession, actor: Actor, settings: Settings, **_: object
 ) -> None:
-    if not await guard(call, actor, "admins", "list"):
+    if not await guard(call, actor):
         return
     await call.answer()
     items = await users_repo.list_admins(session)
@@ -307,7 +307,7 @@ async def list_admins(
 
 @router.callback_query(F.data == "a:admin_add")
 async def ask_admin(call: CallbackQuery, actor: Actor, state: FSMContext, **_: object) -> None:
-    if not await guard(call, actor, "admins", "create"):
+    if not await guard(call, actor):
         return
     await call.answer()
     await state.set_state(AdminSG.add_id)
@@ -328,7 +328,7 @@ async def add_admin(
     bot: Bot,
     **_: object,
 ) -> None:
-    if not await guard(message, actor, "admins", "create"):
+    if not await guard(message, actor):
         await state.clear()
         return
     raw = (message.text or "").strip()
@@ -343,7 +343,7 @@ async def add_admin(
         )
         return
 
-    await users_repo.add_admin(session, user_id, AdminRole.ADMIN, actor.user_id)
+    await users_repo.add_admin(session, user_id, actor.user_id)
     await audit_repo.record(session, actor.user_id, "admin.add", "user", user_id)
     shown = await commands_service.grant(bot, user_id)
     await state.clear()
@@ -369,7 +369,7 @@ async def remove_admin(
     bot: Bot,
     **_: object,
 ) -> None:
-    if not await guard(call, actor, "admins", "act"):
+    if not await guard(call, actor):
         return
     user_id = int(call.data.split(":")[2])
     if user_id in settings.owner_ids:

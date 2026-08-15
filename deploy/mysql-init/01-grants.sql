@@ -1,17 +1,21 @@
 -- Права для окружения разработки.
 --
--- Тестам нужна своя база (`shopbot_test`), а проверке миграций — ещё одна
+-- Тестам нужна своя база, а проверке миграций — ещё одна
 -- (`shopbot_schema_check`) под эталонную схему. Обе одноразовые и живут только
 -- на машине разработчика.
+--
+-- Каждый прогон тестов создаёт базу с номером процесса в имени
+-- (`shopbot_test_12345`) и удаляет её за собой. Общее имя означало бы, что
+-- второй одновременный pytest пересоздаёт базу под ногами у первого.
+-- Поэтому право выдаётся на шаблон, а не на конкретное имя: `\_` — это
+-- экранированное подчёркивание, `%` — любой остаток.
 --
 -- На проде этих прав у бота быть не должно: приложению незачем уметь создавать
 -- и удалять базы.
 
-CREATE DATABASE IF NOT EXISTS `shopbot_test`
-  CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 CREATE DATABASE IF NOT EXISTS `shopbot_schema_check`
   CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 
-GRANT ALL PRIVILEGES ON `shopbot_test`.* TO 'shopbot'@'%';
+GRANT ALL PRIVILEGES ON `shopbot\_test\_%`.* TO 'shopbot'@'%';
 GRANT ALL PRIVILEGES ON `shopbot_schema_check`.* TO 'shopbot'@'%';
 FLUSH PRIVILEGES;

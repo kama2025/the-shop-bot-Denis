@@ -9,6 +9,11 @@ SQLite была бы удобнее, но бессмысленна: провер
 Если MySQL недоступна, такие тесты **пропускаются с явным сообщением**, а не
 считаются пройденными: ноль падений без счётчика проверенного — это «не
 проверяли», а не «чисто».
+
+База у каждого прогона своя — с номером процесса в имени. Раньше имя было общим,
+и второй запущенный pytest делал `drop_all` под ногами у первого. Выглядело это
+не как конфликт, а как «MySQL недоступна» в одном прогоне и россыпь необъяснимых
+падений в другом — то есть как раз так, чтобы искать причину в своём коде.
 """
 
 from __future__ import annotations
@@ -25,7 +30,15 @@ from bot.config import get_settings
 from bot.db.base import Base
 from bot.db import models  # noqa: F401 — регистрирует таблицы
 
-TEST_DB_NAME = os.getenv("SHOPBOT_TEST_DB", "shopbot_test")
+
+def _test_db_name() -> str:
+    explicit = os.getenv("SHOPBOT_TEST_DB")
+    if explicit:
+        return explicit
+    return f"shopbot_test_{os.getpid()}"
+
+
+TEST_DB_NAME = _test_db_name()
 
 
 def _admin_url() -> str:
@@ -75,12 +88,40 @@ async def _prepare_database() -> bool:
     return True
 
 
+async def _drop_database() -> None:
+    admin = create_async_engine(_admin_url(), isolation_level="AUTOCOMMIT")
+    try:
+        async with admin.connect() as conn:
+            await conn.execute(text(f"DROP DATABASE IF EXISTS `{TEST_DB_NAME}`"))
+    except Exception:
+        # Не удалось убрать за собой — это не повод ронять прогон. База
+        # одноразовая и живёт только на машине разработчика.
+        pass
+    finally:
+        await admin.dispose()
+
+
 @pytest.fixture(scope="session")
 def db_available() -> bool:
     try:
-        return asyncio.run(_prepare_database())
+        ready = asyncio.run(_prepare_database())
     except Exception:
         return False
+
+    if ready and not os.getenv("SHOPBOT_TEST_DB"):
+        # Своё имя — значит и убирать своё. Базу, заданную руками через
+        # SHOPBOT_TEST_DB, не трогаем: её мог создать не прогон, а человек.
+        yield_cleanup.append(TEST_DB_NAME)
+    return ready
+
+
+# Имена баз, которые прогон создал сам и обязан удалить в конце.
+yield_cleanup: list[str] = []
+
+
+def pytest_sessionfinish(session, exitstatus):  # noqa: ARG001 — сигнатура pytest
+    if yield_cleanup:
+        asyncio.run(_drop_database())
 
 
 @pytest_asyncio.fixture

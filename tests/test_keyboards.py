@@ -18,7 +18,6 @@ from aiogram.types import InlineKeyboardMarkup
 
 from bot.db.models import (
     Admin,
-    AdminRole,
     Broadcast,
     Category,
     Channel,
@@ -153,8 +152,7 @@ def _all_keyboards() -> list[tuple[str, InlineKeyboardMarkup]]:
                 _product(2, DeliveryType.MANUAL), 1, 9000, 10**6, 10, "u:cat:1:0"
             ),
         ),
-        ("admin.menu(owner)", admin_kb.menu(is_owner=True)),
-        ("admin.menu(admin)", admin_kb.menu(is_owner=False)),
+        ("admin.menu", admin_kb.menu()),
         ("admin.categories", admin_kb.categories([category], 0, 2)),
         ("admin.category_card", admin_kb.category_card(category, 4)),
         ("admin.products", admin_kb.products([product], stock, 1, 0, 2)),
@@ -189,8 +187,8 @@ def _all_keyboards() -> list[tuple[str, InlineKeyboardMarkup]]:
         ("admin.texts", admin_kb.texts([TextEntry(key="welcome", value="x", title="Приветствие")], 0, 6)),
         ("admin.settings", admin_kb.settings([SettingEntry(key="shop_name", value="Shop", title="Название")], 0, 2)),
         ("admin.channels", admin_kb.channels([_channel()])),
-        ("admin.admins", admin_kb.admins([Admin(id=1, user_id=878351372, role=AdminRole.OWNER)], [878351372])),
-        ("admin.admins(removable)", admin_kb.admins([Admin(id=2, user_id=111, role=AdminRole.ADMIN)], [878351372])),
+        ("admin.admins", admin_kb.admins([Admin(id=1, user_id=878351372)], [878351372])),
+        ("admin.admins(removable)", admin_kb.admins([Admin(id=2, user_id=111)], [878351372])),
         ("admin.export_menu", admin_kb.export_menu()),
         ("admin.confirm", admin_kb.confirm("a:x", "a:y")),
         ("admin.user_card", admin_kb.user_card(878351372, is_blocked=False)),

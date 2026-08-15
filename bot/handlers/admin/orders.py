@@ -28,14 +28,13 @@ from bot.utils.render import show
 router = Router(name="admin.orders")
 
 PER_PAGE = 8
-SECTION = "orders"
 
 
 @router.callback_query(F.data.startswith("a:orders:"))
 async def list_orders(
     call: CallbackQuery, session: AsyncSession, actor: Actor, state: FSMContext, **_: object
 ) -> None:
-    if not await guard(call, actor, SECTION, "list"):
+    if not await guard(call, actor):
         return
     await call.answer()
     page = int(call.data.split(":")[2])
@@ -60,7 +59,7 @@ async def list_orders(
 async def toggle_filter(
     call: CallbackQuery, session: AsyncSession, actor: Actor, state: FSMContext, **_: object
 ) -> None:
-    if not await guard(call, actor, SECTION, "list"):
+    if not await guard(call, actor):
         return
     data = await state.get_data()
     current = data.get("orders_filter")
@@ -73,7 +72,7 @@ async def toggle_filter(
 async def order_card(
     call: CallbackQuery, session: AsyncSession, actor: Actor, **_: object
 ) -> None:
-    if not await guard(call, actor, SECTION, "view"):
+    if not await guard(call, actor):
         return
     await call.answer()
     order_id = int(call.data.split(":")[2])
@@ -137,7 +136,7 @@ async def _render_order(event, session: AsyncSession, order_id: int) -> None:
 async def order_items(
     call: CallbackQuery, session: AsyncSession, actor: Actor, **_: object
 ) -> None:
-    if not await guard(call, actor, SECTION, "view"):
+    if not await guard(call, actor):
         return
     await call.answer()
     order_id = int(call.data.split(":")[2])
@@ -153,7 +152,7 @@ async def order_items(
 async def order_payments(
     call: CallbackQuery, session: AsyncSession, actor: Actor, **_: object
 ) -> None:
-    if not await guard(call, actor, SECTION, "view"):
+    if not await guard(call, actor):
         return
     await call.answer()
     order_id = int(call.data.split(":")[2])
@@ -176,7 +175,7 @@ async def order_payments(
 
 @router.callback_query(F.data == "a:order_search")
 async def ask_search(call: CallbackQuery, actor: Actor, state: FSMContext, **_: object) -> None:
-    if not await guard(call, actor, SECTION, "list"):
+    if not await guard(call, actor):
         return
     await call.answer()
     await state.set_state(OrderSG.search)
@@ -191,7 +190,7 @@ async def ask_search(call: CallbackQuery, actor: Actor, state: FSMContext, **_: 
 async def do_search(
     message: Message, session: AsyncSession, actor: Actor, state: FSMContext, **_: object
 ) -> None:
-    if not await guard(message, actor, SECTION, "list"):
+    if not await guard(message, actor):
         await state.clear()
         return
     await state.set_state(None)
@@ -214,7 +213,7 @@ async def do_search(
 
 @router.callback_query(F.data.startswith("a:order_refund:"))
 async def ask_refund(call: CallbackQuery, actor: Actor, state: FSMContext, **_: object) -> None:
-    if not await guard(call, actor, SECTION, "act"):
+    if not await guard(call, actor):
         return
     await call.answer()
     order_id = int(call.data.split(":")[2])
@@ -239,7 +238,7 @@ async def do_refund(
     bot: Bot,
     **_: object,
 ) -> None:
-    if not await guard(message, actor, SECTION, "act"):
+    if not await guard(message, actor):
         await state.clear()
         return
     data = await state.get_data()
@@ -276,7 +275,7 @@ async def do_refund(
 
 @router.callback_query(F.data.startswith("a:order_replace:"))
 async def ask_replace(call: CallbackQuery, actor: Actor, state: FSMContext, **_: object) -> None:
-    if not await guard(call, actor, SECTION, "act"):
+    if not await guard(call, actor):
         return
     await call.answer()
     order_id = int(call.data.split(":")[2])
@@ -300,7 +299,7 @@ async def do_replace(
     bot: Bot,
     **_: object,
 ) -> None:
-    if not await guard(message, actor, SECTION, "act"):
+    if not await guard(message, actor):
         await state.clear()
         return
     data = await state.get_data()
@@ -333,7 +332,7 @@ async def do_replace(
 
 @router.callback_query(F.data.startswith("a:order_block:"))
 async def ask_block(call: CallbackQuery, actor: Actor, state: FSMContext, **_: object) -> None:
-    if not await guard(call, actor, "users", "act"):
+    if not await guard(call, actor):
         return
     await call.answer()
     order_id = int(call.data.split(":")[2])
@@ -350,7 +349,7 @@ async def ask_block(call: CallbackQuery, actor: Actor, state: FSMContext, **_: o
 async def do_block(
     message: Message, session: AsyncSession, actor: Actor, state: FSMContext, **_: object
 ) -> None:
-    if not await guard(message, actor, "users", "act"):
+    if not await guard(message, actor):
         await state.clear()
         return
     data = await state.get_data()
@@ -384,7 +383,7 @@ async def _tell_buyer(bot: Bot, user_id: int, text: str) -> bool:
 async def ask_manual(
     call: CallbackQuery, session: AsyncSession, actor: Actor, state: FSMContext, **_: object
 ) -> None:
-    if not await guard(call, actor, SECTION, "act"):
+    if not await guard(call, actor):
         return
     await call.answer()
     order_id = int(call.data.split(":")[2])
@@ -423,7 +422,7 @@ async def do_manual(
     bot: Bot,
     **_: object,
 ) -> None:
-    if not await guard(message, actor, SECTION, "act"):
+    if not await guard(message, actor):
         await state.clear()
         return
 

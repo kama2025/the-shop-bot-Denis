@@ -87,24 +87,29 @@ MUTATIONS: list[Mutation] = [
     Mutation(
         name="access-default-deny",
         path="bot/services/access.py",
-        anchor="    return role in allowed",
+        anchor="    return is_admin is True",
         replacement="    return True  # МУТАЦИЯ",
         tests=["tests/test_access.py"],
-        breaks="проверка роли всегда отвечает «разрешено»",
+        breaks="проверка прав всегда отвечает «разрешено»",
         guards="умолчание в правах — отказ",
     ),
     Mutation(
-        name="access-unknown-section",
+        name="access-truthy-is-not-admin",
         path="bot/services/access.py",
-        anchor="    doors = PERMISSIONS.get(section)\n"
-        "    if doors is None:\n"
-        "        return False",
-        replacement="    doors = PERMISSIONS.get(section)\n"
-        "    if doors is None:\n"
-        "        return True  # МУТАЦИЯ",
-        tests=["tests/test_access.py::test_unknown_section_is_denied"],
-        breaks="неизвестный раздел становится разрешённым",
-        guards="раздела нет в таблице — значит закрыт",
+        anchor="    return is_admin is True",
+        replacement="    return bool(is_admin)  # МУТАЦИЯ",
+        tests=["tests/test_access.py::test_truthy_but_not_true_denied"],
+        breaks="администратором становится любое истинное значение",
+        guards="признак администратора — именно True, а не «что-то непустое»",
+    ),
+    Mutation(
+        name="actor-defaults-to-admin",
+        path="bot/services/access.py",
+        anchor="    is_admin: bool = False",
+        replacement="    is_admin: bool = True  # МУТАЦИЯ",
+        tests=["tests/test_access.py::test_actor_defaults_to_denied"],
+        breaks="актор без явного признака считается администратором",
+        guards="умолчание у актора закрывает, а не открывает",
     ),
     Mutation(
         name="promo-usage-limit",

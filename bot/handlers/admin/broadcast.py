@@ -23,12 +23,11 @@ from bot.utils.render import show
 
 router = Router(name="admin.broadcast")
 
-SECTION = "broadcast"
 
 
 @router.callback_query(F.data == "a:bc")
 async def menu(call: CallbackQuery, session: AsyncSession, actor: Actor, **_: object) -> None:
-    if not await guard(call, actor, SECTION, "list"):
+    if not await guard(call, actor):
         return
     await call.answer()
     recent = await broadcast_repo.list_recent(session)
@@ -37,7 +36,7 @@ async def menu(call: CallbackQuery, session: AsyncSession, actor: Actor, **_: ob
 
 @router.callback_query(F.data == "a:bc_new")
 async def ask_content(call: CallbackQuery, actor: Actor, state: FSMContext, **_: object) -> None:
-    if not await guard(call, actor, SECTION, "create"):
+    if not await guard(call, actor):
         return
     await call.answer()
     await state.set_state(BroadcastSG.content)
@@ -54,7 +53,7 @@ async def ask_content(call: CallbackQuery, actor: Actor, state: FSMContext, **_:
 async def got_content(
     message: Message, actor: Actor, state: FSMContext, **_: object
 ) -> None:
-    if not await guard(message, actor, SECTION, "create"):
+    if not await guard(message, actor):
         await state.clear()
         return
 
@@ -83,7 +82,7 @@ async def got_content(
 async def got_buttons(
     message: Message, session: AsyncSession, actor: Actor, state: FSMContext, **_: object
 ) -> None:
-    if not await guard(message, actor, SECTION, "create"):
+    if not await guard(message, actor):
         await state.clear()
         return
 
@@ -128,7 +127,7 @@ async def send(
     session_factory: async_sessionmaker[AsyncSession],
     **_: object,
 ) -> None:
-    if not await guard(call, actor, SECTION, "act"):
+    if not await guard(call, actor):
         return
     broadcast_id = int(call.data.split(":")[2])
     broadcast = await broadcast_repo.get(session, broadcast_id)
@@ -162,7 +161,7 @@ async def send(
 
 @router.callback_query(F.data.startswith("a:bc_view:"))
 async def view(call: CallbackQuery, session: AsyncSession, actor: Actor, **_: object) -> None:
-    if not await guard(call, actor, SECTION, "view"):
+    if not await guard(call, actor):
         return
     await call.answer()
     broadcast_id = int(call.data.split(":")[2])
@@ -179,7 +178,7 @@ async def view(call: CallbackQuery, session: AsyncSession, actor: Actor, **_: ob
 
 @router.callback_query(F.data.startswith("a:bc_stop:"))
 async def stop(call: CallbackQuery, session: AsyncSession, actor: Actor, **_: object) -> None:
-    if not await guard(call, actor, SECTION, "act"):
+    if not await guard(call, actor):
         return
     broadcast_id = int(call.data.split(":")[2])
     await broadcast_repo.set_status(session, broadcast_id, BroadcastStatus.PAUSED)
@@ -193,7 +192,7 @@ async def stop(call: CallbackQuery, session: AsyncSession, actor: Actor, **_: ob
 async def cancel(
     call: CallbackQuery, session: AsyncSession, actor: Actor, state: FSMContext, **_: object
 ) -> None:
-    if not await guard(call, actor, SECTION, "act"):
+    if not await guard(call, actor):
         return
     broadcast_id = int(call.data.split(":")[2])
     await broadcast_repo.set_status(session, broadcast_id, BroadcastStatus.CANCELED)

@@ -1,10 +1,9 @@
 """Общее для админ-панели: проверка прав и мелкие помощники.
 
-Проверка прав вызывается **в каждом хендлере явно**, а не одним middleware на
-роутер. Причина в спеке: право проверяется на четырёх дверях отдельно — открыть
-запись, показать список, выполнить действие, создать. Middleware знает только
-«админ или нет» и пропустит обычного администратора в раздел, который должен
-быть доступен лишь владельцу.
+Проверка вызывается **в каждом хендлере явно**, а не одним middleware на роутер.
+Ролей больше нет, и соблазн заменить это middleware'ом велик — но callback-запрос
+может отправить кто угодно, а хендлеры добавляются постоянно. Явный вызов
+видно в diff'е; забытый middleware на новом роутере — нет.
 """
 
 from __future__ import annotations
@@ -20,21 +19,14 @@ log = logging.getLogger(__name__)
 DENIED = "🚫 Недостаточно прав"
 
 
-async def guard(
-    event: Message | CallbackQuery, actor: Actor, section: str, door: str
-) -> bool:
+async def guard(event: Message | CallbackQuery, actor: Actor) -> bool:
     """Возвращает True, если действие разрешено. Иначе сам отвечает отказом."""
-    if allows(actor.role, section, door):
+    if allows(actor.is_admin):
         return True
 
     log.warning(
         "Отказ в доступе",
-        extra={
-            "user_id": actor.user_id,
-            "role": actor.role,
-            "section": section,
-            "door": door,
-        },
+        extra={"user_id": actor.user_id, "is_admin": actor.is_admin},
     )
     if isinstance(event, CallbackQuery):
         await event.answer(DENIED, show_alert=True)

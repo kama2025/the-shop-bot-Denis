@@ -33,7 +33,7 @@ PER_PAGE = 8
 
 @router.callback_query(F.data.startswith("a:texts:"))
 async def list_texts(call: CallbackQuery, session: AsyncSession, actor: Actor, **_: object) -> None:
-    if not await guard(call, actor, "texts", "list"):
+    if not await guard(call, actor):
         return
     await call.answer()
     page = int(call.data.split(":")[2])
@@ -48,7 +48,7 @@ async def list_texts(call: CallbackQuery, session: AsyncSession, actor: Actor, *
 
 @router.callback_query(F.data.startswith("a:text:"))
 async def text_card(call: CallbackQuery, session: AsyncSession, actor: Actor, state: FSMContext, **_: object) -> None:
-    if not await guard(call, actor, "texts", "view"):
+    if not await guard(call, actor):
         return
     await call.answer()
     key = call.data.split(":", 2)[2]
@@ -79,7 +79,7 @@ async def text_card(call: CallbackQuery, session: AsyncSession, actor: Actor, st
 async def save_text(
     message: Message, session: AsyncSession, actor: Actor, state: FSMContext, **_: object
 ) -> None:
-    if not await guard(message, actor, "texts", "act"):
+    if not await guard(message, actor):
         await state.clear()
         return
     data = await state.get_data()
@@ -103,7 +103,7 @@ async def save_text(
 async def list_settings(
     call: CallbackQuery, session: AsyncSession, actor: Actor, **_: object
 ) -> None:
-    if not await guard(call, actor, "settings", "list"):
+    if not await guard(call, actor):
         return
     await call.answer()
     page = int(call.data.split(":")[2])
@@ -120,7 +120,7 @@ async def list_settings(
 async def setting_card(
     call: CallbackQuery, session: AsyncSession, actor: Actor, state: FSMContext, **_: object
 ) -> None:
-    if not await guard(call, actor, "settings", "view"):
+    if not await guard(call, actor):
         return
     await call.answer()
     key = call.data.split(":", 2)[2]
@@ -151,7 +151,7 @@ async def setting_card(
 async def save_setting(
     message: Message, session: AsyncSession, actor: Actor, state: FSMContext, **_: object
 ) -> None:
-    if not await guard(message, actor, "settings", "act"):
+    if not await guard(message, actor):
         await state.clear()
         return
     data = await state.get_data()
@@ -182,7 +182,7 @@ async def save_setting(
 
 @router.callback_query(F.data == "a:set_header")
 async def ask_header(call: CallbackQuery, actor: Actor, state: FSMContext, **_: object) -> None:
-    if not await guard(call, actor, "settings", "act"):
+    if not await guard(call, actor):
         return
     await call.answer()
     await state.set_state(SettingSG.header_image)
@@ -202,7 +202,7 @@ async def save_header(
     settings: Settings,
     **_: object,
 ) -> None:
-    if not await guard(message, actor, "settings", "act"):
+    if not await guard(message, actor):
         await state.clear()
         return
     if not message.photo:
@@ -221,7 +221,7 @@ async def save_header(
 async def list_channels(
     call: CallbackQuery, session: AsyncSession, actor: Actor, **_: object
 ) -> None:
-    if not await guard(call, actor, "channels", "list"):
+    if not await guard(call, actor):
         return
     await call.answer()
     items = await content_repo.list_channels(session, only_active=False)
@@ -246,7 +246,7 @@ async def list_channels(
 
 @router.callback_query(F.data == "a:ch_add")
 async def ask_channel(call: CallbackQuery, actor: Actor, state: FSMContext, **_: object) -> None:
-    if not await guard(call, actor, "channels", "create"):
+    if not await guard(call, actor):
         return
     await call.answer()
     await state.set_state(ChannelSG.chat_ref)
@@ -301,7 +301,7 @@ def _parse_channel_ref(message: Message) -> str | None:
 async def got_chat_ref(
     message: Message, session: AsyncSession, actor: Actor, state: FSMContext, **_: object
 ) -> None:
-    if not await guard(message, actor, "channels", "create"):
+    if not await guard(message, actor):
         await state.clear()
         return
 
@@ -369,7 +369,7 @@ async def got_chat_ref(
 async def got_invite(
     message: Message, session: AsyncSession, actor: Actor, state: FSMContext, **_: object
 ) -> None:
-    if not await guard(message, actor, "channels", "create"):
+    if not await guard(message, actor):
         await state.clear()
         return
     url = (message.text or "").strip()
@@ -412,7 +412,7 @@ async def _save_channel(
 async def toggle_channel(
     call: CallbackQuery, session: AsyncSession, actor: Actor, **_: object
 ) -> None:
-    if not await guard(call, actor, "channels", "act"):
+    if not await guard(call, actor):
         return
     channel_id = int(call.data.split(":")[2])
     channel = await content_repo.get_channel(session, channel_id)
@@ -428,7 +428,7 @@ async def toggle_channel(
 async def delete_channel(
     call: CallbackQuery, session: AsyncSession, actor: Actor, **_: object
 ) -> None:
-    if not await guard(call, actor, "channels", "act"):
+    if not await guard(call, actor):
         return
     channel_id = int(call.data.split(":")[2])
     await content_repo.remove_channel(session, channel_id)

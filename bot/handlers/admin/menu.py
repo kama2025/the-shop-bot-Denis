@@ -8,7 +8,6 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from bot.db.models import AdminRole
 from bot.keyboards import admin as admin_kb
 from bot.repo import audit as audit_repo
 from bot.services import stats as stats_service
@@ -21,8 +20,7 @@ router = Router(name="admin.menu")
 
 
 def _header(actor: Actor) -> str:
-    role = AdminRole.TITLES.get(actor.role or "", "")
-    return f"🛠 <b>Админ-панель</b>\n{role} · <code>{actor.user_id}</code>"
+    return f"🛠 <b>Админ-панель</b>\n<code>{actor.user_id}</code>"
 
 
 @router.message(Command("admin"))
@@ -40,7 +38,7 @@ async def cmd_admin(
         f"💰 Выручка: {format_kop(snapshot.revenue_kop)}\n"
         f"📦 Свободных позиций: {snapshot.stock_available}"
     )
-    await show(message, text, admin_kb.menu(actor.is_owner))
+    await show(message, text, admin_kb.menu())
 
 
 @router.callback_query(F.data == "a:menu")
@@ -59,7 +57,7 @@ async def open_menu(
         f"💰 Выручка: {format_kop(snapshot.revenue_kop)}\n"
         f"📦 Свободных позиций: {snapshot.stock_available}"
     )
-    await show(call, text, admin_kb.menu(actor.is_owner))
+    await show(call, text, admin_kb.menu())
 
 
 @router.callback_query(F.data == "a:audit")
@@ -68,7 +66,7 @@ async def open_audit(
 ) -> None:
     from bot.handlers.admin.common import guard
 
-    if not await guard(call, actor, "audit", "list"):
+    if not await guard(call, actor):
         return
     await call.answer()
     entries = await audit_repo.recent(session, limit=25)

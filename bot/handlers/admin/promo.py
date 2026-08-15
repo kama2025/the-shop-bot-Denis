@@ -32,14 +32,13 @@ from bot.utils.render import show
 router = Router(name="admin.promo")
 
 PER_PAGE = 8
-SECTION = "promo"
 
 
 @router.callback_query(F.data.startswith("a:promos:"))
 async def list_promos(
     call: CallbackQuery, session: AsyncSession, actor: Actor, **_: object
 ) -> None:
-    if not await guard(call, actor, SECTION, "list"):
+    if not await guard(call, actor):
         return
     await call.answer()
     page = int(call.data.split(":")[2])
@@ -55,7 +54,7 @@ async def list_promos(
 async def promo_card(
     call: CallbackQuery, session: AsyncSession, actor: Actor, **_: object
 ) -> None:
-    if not await guard(call, actor, SECTION, "view"):
+    if not await guard(call, actor):
         return
     await call.answer()
     promo_id = int(call.data.split(":")[2])
@@ -104,7 +103,7 @@ async def _render(event, session: AsyncSession, promo_id: int) -> None:
 
 @router.callback_query(F.data == "a:promo_add")
 async def ask_code(call: CallbackQuery, actor: Actor, state: FSMContext, **_: object) -> None:
-    if not await guard(call, actor, SECTION, "create"):
+    if not await guard(call, actor):
         return
     await call.answer()
     await state.set_state(PromoSG.code)
@@ -119,7 +118,7 @@ async def ask_code(call: CallbackQuery, actor: Actor, state: FSMContext, **_: ob
 async def got_code(
     message: Message, session: AsyncSession, actor: Actor, state: FSMContext, **_: object
 ) -> None:
-    if not await guard(message, actor, SECTION, "create"):
+    if not await guard(message, actor):
         await state.clear()
         return
     code = promo_repo.normalize_code(message.text or "")
@@ -146,7 +145,7 @@ async def got_code(
 
 @router.callback_query(F.data.startswith("a:promo_type:"), PromoSG.discount_type)
 async def got_type(call: CallbackQuery, actor: Actor, state: FSMContext, **_: object) -> None:
-    if not await guard(call, actor, SECTION, "create"):
+    if not await guard(call, actor):
         return
     await call.answer()
     kind = call.data.split(":")[2]
@@ -165,7 +164,7 @@ async def got_type(call: CallbackQuery, actor: Actor, state: FSMContext, **_: ob
 async def got_value(
     message: Message, session: AsyncSession, actor: Actor, state: FSMContext, **_: object
 ) -> None:
-    if not await guard(message, actor, SECTION, "create"):
+    if not await guard(message, actor):
         await state.clear()
         return
     data = await state.get_data()
@@ -225,7 +224,7 @@ EDIT_PROMPTS = {
 
 @router.callback_query(F.data.startswith("a:promo_edit:"))
 async def ask_edit(call: CallbackQuery, actor: Actor, state: FSMContext, **_: object) -> None:
-    if not await guard(call, actor, SECTION, "act"):
+    if not await guard(call, actor):
         return
     await call.answer()
     _, _, promo_id, field = call.data.split(":", 3)
@@ -245,7 +244,7 @@ async def _current(session: AsyncSession, state: FSMContext):
 async def save_value(
     message: Message, session: AsyncSession, actor: Actor, state: FSMContext, **_: object
 ) -> None:
-    if not await guard(message, actor, SECTION, "act"):
+    if not await guard(message, actor):
         await state.clear()
         return
     promo = await _current(session, state)
@@ -266,7 +265,7 @@ async def save_value(
 async def save_limit(
     message: Message, session: AsyncSession, actor: Actor, state: FSMContext, **_: object
 ) -> None:
-    if not await guard(message, actor, SECTION, "act"):
+    if not await guard(message, actor):
         await state.clear()
         return
     promo = await _current(session, state)
@@ -294,7 +293,7 @@ async def save_limit(
 async def save_per_user(
     message: Message, session: AsyncSession, actor: Actor, state: FSMContext, **_: object
 ) -> None:
-    if not await guard(message, actor, SECTION, "act"):
+    if not await guard(message, actor):
         await state.clear()
         return
     promo = await _current(session, state)
@@ -317,7 +316,7 @@ async def save_per_user(
 async def save_min_order(
     message: Message, session: AsyncSession, actor: Actor, state: FSMContext, **_: object
 ) -> None:
-    if not await guard(message, actor, SECTION, "act"):
+    if not await guard(message, actor):
         await state.clear()
         return
     promo = await _current(session, state)
@@ -337,7 +336,7 @@ async def save_min_order(
 async def save_until(
     message: Message, session: AsyncSession, actor: Actor, state: FSMContext, **_: object
 ) -> None:
-    if not await guard(message, actor, SECTION, "act"):
+    if not await guard(message, actor):
         await state.clear()
         return
     promo = await _current(session, state)
@@ -362,7 +361,7 @@ async def save_until(
 
 @router.callback_query(F.data.startswith("a:promo_toggle:"))
 async def toggle(call: CallbackQuery, session: AsyncSession, actor: Actor, **_: object) -> None:
-    if not await guard(call, actor, SECTION, "act"):
+    if not await guard(call, actor):
         return
     promo_id = int(call.data.split(":")[2])
     promo = await promo_repo.get(session, promo_id)
@@ -381,7 +380,7 @@ async def toggle(call: CallbackQuery, session: AsyncSession, actor: Actor, **_: 
 async def promo_stats(
     call: CallbackQuery, session: AsyncSession, actor: Actor, **_: object
 ) -> None:
-    if not await guard(call, actor, SECTION, "view"):
+    if not await guard(call, actor):
         return
     await call.answer()
     promo_id = int(call.data.split(":")[2])
@@ -401,7 +400,7 @@ async def promo_stats(
 async def ask_scope(
     call: CallbackQuery, session: AsyncSession, actor: Actor, **_: object
 ) -> None:
-    if not await guard(call, actor, SECTION, "act"):
+    if not await guard(call, actor):
         return
     await call.answer()
     promo_id = int(call.data.split(":")[2])
@@ -415,7 +414,7 @@ async def ask_scope(
 
 @router.callback_query(F.data.startswith("a:promo_scope_all:"))
 async def scope_all(call: CallbackQuery, session: AsyncSession, actor: Actor, **_: object) -> None:
-    if not await guard(call, actor, SECTION, "act"):
+    if not await guard(call, actor):
         return
     promo_id = int(call.data.split(":")[2])
     await promo_repo.clear_scopes(session, promo_id)
@@ -427,7 +426,7 @@ async def scope_all(call: CallbackQuery, session: AsyncSession, actor: Actor, **
 async def scope_category(
     call: CallbackQuery, session: AsyncSession, actor: Actor, **_: object
 ) -> None:
-    if not await guard(call, actor, SECTION, "act"):
+    if not await guard(call, actor):
         return
     parts = call.data.split(":")
     promo_id, category_id = int(parts[2]), int(parts[3])
@@ -439,7 +438,7 @@ async def scope_category(
 
 @router.callback_query(F.data.startswith("a:promo_del:"))
 async def ask_delete(call: CallbackQuery, session: AsyncSession, actor: Actor, **_: object) -> None:
-    if not await guard(call, actor, SECTION, "act"):
+    if not await guard(call, actor):
         return
     await call.answer()
     promo_id = int(call.data.split(":")[2])
@@ -459,7 +458,7 @@ async def ask_delete(call: CallbackQuery, session: AsyncSession, actor: Actor, *
 
 @router.callback_query(F.data.startswith("a:promo_del_ok:"))
 async def do_delete(call: CallbackQuery, session: AsyncSession, actor: Actor, **_: object) -> None:
-    if not await guard(call, actor, SECTION, "act"):
+    if not await guard(call, actor):
         return
     promo_id = int(call.data.split(":")[2])
     await promo_repo.remove(session, promo_id)

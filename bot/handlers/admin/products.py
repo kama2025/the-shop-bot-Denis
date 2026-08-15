@@ -26,14 +26,13 @@ from bot.utils.render import show
 router = Router(name="admin.products")
 
 PER_PAGE = 8
-SECTION = "products"
 
 
 @router.callback_query(F.data.startswith("a:prods:"))
 async def list_products(
     call: CallbackQuery, session: AsyncSession, actor: Actor, **_: object
 ) -> None:
-    if not await guard(call, actor, SECTION, "list"):
+    if not await guard(call, actor):
         return
     await call.answer()
     _, _, category_id_raw, page_raw = call.data.split(":", 3)
@@ -59,7 +58,7 @@ async def list_products(
 async def product_card(
     call: CallbackQuery, session: AsyncSession, actor: Actor, **_: object
 ) -> None:
-    if not await guard(call, actor, SECTION, "view"):
+    if not await guard(call, actor):
         return
     await call.answer()
     product_id = int(call.data.split(":")[2])
@@ -92,7 +91,7 @@ async def product_card(
 async def ask_delivery_type(
     call: CallbackQuery, actor: Actor, state: FSMContext, **_: object
 ) -> None:
-    if not await guard(call, actor, SECTION, "create"):
+    if not await guard(call, actor):
         return
     await call.answer()
     category_id = int(call.data.split(":")[2])
@@ -109,7 +108,7 @@ async def ask_delivery_type(
 async def got_delivery_type(
     call: CallbackQuery, actor: Actor, state: FSMContext, **_: object
 ) -> None:
-    if not await guard(call, actor, SECTION, "create"):
+    if not await guard(call, actor):
         return
     parts = call.data.split(":")
     category_id, kind = int(parts[2]), parts[3]
@@ -131,7 +130,7 @@ async def got_delivery_type(
 async def ask_change_type(
     call: CallbackQuery, session: AsyncSession, actor: Actor, **_: object
 ) -> None:
-    if not await guard(call, actor, SECTION, "act"):
+    if not await guard(call, actor):
         return
     await call.answer()
     product_id = int(call.data.split(":")[2])
@@ -162,7 +161,7 @@ async def ask_change_type(
 async def change_type(
     call: CallbackQuery, session: AsyncSession, actor: Actor, **_: object
 ) -> None:
-    if not await guard(call, actor, SECTION, "act"):
+    if not await guard(call, actor):
         return
     parts = call.data.split(":")
     product_id, kind = int(parts[2]), parts[3]
@@ -191,7 +190,7 @@ async def change_type(
 async def got_title(
     message: Message, actor: Actor, state: FSMContext, **_: object
 ) -> None:
-    if not await guard(message, actor, SECTION, "create"):
+    if not await guard(message, actor):
         await state.clear()
         return
     title = (message.text or "").strip()
@@ -207,7 +206,7 @@ async def got_title(
 async def got_description(
     message: Message, actor: Actor, state: FSMContext, **_: object
 ) -> None:
-    if not await guard(message, actor, SECTION, "create"):
+    if not await guard(message, actor):
         await state.clear()
         return
     raw = (message.text or "").strip()
@@ -220,7 +219,7 @@ async def got_description(
 async def got_price(
     message: Message, actor: Actor, state: FSMContext, **_: object
 ) -> None:
-    if not await guard(message, actor, SECTION, "create"):
+    if not await guard(message, actor):
         await state.clear()
         return
     try:
@@ -245,7 +244,7 @@ async def got_image(
     settings: Settings,
     **_: object,
 ) -> None:
-    if not await guard(message, actor, SECTION, "create"):
+    if not await guard(message, actor):
         await state.clear()
         return
     data = await state.get_data()
@@ -312,7 +311,7 @@ FIELD_PROMPTS = {
 async def ask_edit(
     call: CallbackQuery, actor: Actor, state: FSMContext, **_: object
 ) -> None:
-    if not await guard(call, actor, SECTION, "act"):
+    if not await guard(call, actor):
         return
     await call.answer()
     _, _, product_id, field = call.data.split(":", 3)
@@ -326,7 +325,7 @@ async def ask_edit(
 async def save_title(
     message: Message, session: AsyncSession, actor: Actor, state: FSMContext, **_: object
 ) -> None:
-    if not await guard(message, actor, SECTION, "act"):
+    if not await guard(message, actor):
         await state.clear()
         return
     product = await _current(session, state)
@@ -344,7 +343,7 @@ async def save_title(
 async def save_description(
     message: Message, session: AsyncSession, actor: Actor, state: FSMContext, **_: object
 ) -> None:
-    if not await guard(message, actor, SECTION, "act"):
+    if not await guard(message, actor):
         await state.clear()
         return
     product = await _current(session, state)
@@ -363,7 +362,7 @@ async def save_description(
 async def save_price(
     message: Message, session: AsyncSession, actor: Actor, state: FSMContext, **_: object
 ) -> None:
-    if not await guard(message, actor, SECTION, "act"):
+    if not await guard(message, actor):
         await state.clear()
         return
     product = await _current(session, state)
@@ -404,7 +403,7 @@ async def save_image(
     settings: Settings,
     **_: object,
 ) -> None:
-    if not await guard(message, actor, SECTION, "act"):
+    if not await guard(message, actor):
         await state.clear()
         return
     product = await _current(session, state)
@@ -444,7 +443,7 @@ async def _current(session: AsyncSession, state: FSMContext):
 
 @router.callback_query(F.data.startswith("a:prod_toggle:"))
 async def toggle(call: CallbackQuery, session: AsyncSession, actor: Actor, **_: object) -> None:
-    if not await guard(call, actor, SECTION, "act"):
+    if not await guard(call, actor):
         return
     product_id = int(call.data.split(":")[2])
     product = await catalog_repo.get_product(session, product_id)
@@ -463,7 +462,7 @@ async def toggle(call: CallbackQuery, session: AsyncSession, actor: Actor, **_: 
 
 @router.callback_query(F.data.startswith("a:prod_move:"))
 async def move(call: CallbackQuery, session: AsyncSession, actor: Actor, **_: object) -> None:
-    if not await guard(call, actor, SECTION, "act"):
+    if not await guard(call, actor):
         return
     parts = call.data.split(":")
     product_id, direction = int(parts[2]), int(parts[3])
@@ -477,7 +476,7 @@ async def move(call: CallbackQuery, session: AsyncSession, actor: Actor, **_: ob
 async def ask_category(
     call: CallbackQuery, session: AsyncSession, actor: Actor, **_: object
 ) -> None:
-    if not await guard(call, actor, SECTION, "act"):
+    if not await guard(call, actor):
         return
     await call.answer()
     product_id = int(call.data.split(":")[2])
@@ -489,7 +488,7 @@ async def ask_category(
 async def set_category(
     call: CallbackQuery, session: AsyncSession, actor: Actor, **_: object
 ) -> None:
-    if not await guard(call, actor, SECTION, "act"):
+    if not await guard(call, actor):
         return
     parts = call.data.split(":")
     product_id, category_id = int(parts[2]), int(parts[3])
@@ -511,7 +510,7 @@ async def set_category(
 async def ask_delete(
     call: CallbackQuery, session: AsyncSession, actor: Actor, **_: object
 ) -> None:
-    if not await guard(call, actor, SECTION, "act"):
+    if not await guard(call, actor):
         return
     await call.answer()
     product_id = int(call.data.split(":")[2])
@@ -535,7 +534,7 @@ async def ask_delete(
 async def do_delete(
     call: CallbackQuery, session: AsyncSession, actor: Actor, **_: object
 ) -> None:
-    if not await guard(call, actor, SECTION, "act"):
+    if not await guard(call, actor):
         return
     product_id = int(call.data.split(":")[2])
     product = await catalog_repo.get_product(session, product_id)

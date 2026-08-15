@@ -115,11 +115,6 @@ class StockStatus:
     }
 
 
-class AdminRole:
-    OWNER = "owner"
-    ADMIN = "admin"
-
-    TITLES = {OWNER: "👑 Владелец", ADMIN: "🛠 Администратор"}
 
 
 class BalanceTxnKind:
@@ -189,7 +184,6 @@ class Admin(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     user_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
-    role: Mapped[str] = mapped_column(String(16), default=AdminRole.ADMIN)
     added_by: Mapped[int | None] = mapped_column(BigInteger)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
