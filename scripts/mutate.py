@@ -185,11 +185,16 @@ MUTATIONS: list[Mutation] = [
     ),
     Mutation(
         name="admin-header-fields",
-        path="bot/services/stats.py",
-        anchor='    orders_awaiting_credentials: int = 0',
-        replacement='    orders_awaiting_credentials_RENAMED: int = 0  # МУТАЦИЯ',
+        path="bot/handlers/admin/menu.py",
+        # Ровно тот баг, что был в бою: шапка обращается к полю, которого у
+        # снимка нет. Переименовать поле в самом dataclass недостаточно —
+        # присваивание в collect создаст атрибут на лету, и чтение уцелеет.
+        anchor='    if snapshot.orders_in_work:\n'
+        '        lines.append(f"🛠 В работе: {snapshot.orders_in_work}")',
+        replacement='    if True:  # МУТАЦИЯ\n'
+        '        lines.append(f"📦 Свободных позиций: {snapshot.stock_available}")',
         tests=["tests/test_stats_db.py"],
-        breaks="поле снимка переименовано — шапка админки обращается к несуществующему",
+        breaks="шапка админки читает поле, удалённое из снимка",
         guards="админ-панель открывается, а не падает молча в журнал",
     ),
     Mutation(
