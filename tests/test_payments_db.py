@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import timedelta
 
 import pytest
@@ -571,3 +572,115 @@ async def test_topup_cannot_be_paid_from_balance(session_factory) -> None:
         assert order.status == OrderStatus.NEW
         await session.refresh(user)
         assert user.balance_kop == 100_000
+
+
+# --- то, что пережило мутационную проверку ----------------------------------
+#
+# Три теста ниже написаны не «на всякий случай»: без каждого из них
+# соответствующая поломка проходила мимо всей остальной сюиты.
+
+
+async def test_existing_token_is_never_reissued(session_factory) -> None:
+    """У заказа, у которого токен уже есть, подтверждение его не меняет.
+
+    Случай не выдуманный: миграция на новую модель раздаёт токены заказам,
+    застрявшим в `paid`, — и такой заказ приходит на подтверждение УЖЕ
+    с токеном. Если выдачу токена сделать безусловной, покупателю назовут
+    один номер, а в базе окажется другой, и найти свой заказ он не сможет.
+
+    Обычный путь этого не ловит: заказ, оплаченный ботом, доходит до выдачи
+    токена ровно один раз, и перевыдавать там нечего.
+    """
+    async with session_factory() as session:
+        order, _, _ = await _make_pending_order(session)
+        order.status = OrderStatus.PAID
+        order.paid_at = utcnow()
+        order.token = "AAAA-BBBB"
+        await session.commit()
+        order_id, before = order.id, order.token
+
+    async with session_factory() as session:
+        provider = FakeProvider()
+        order = await orders_repo.get(session, order_id)
+        registry = _confirmed(provider, order)
+
+        result = await payments_service.confirm_order(session, registry, order_id, "button")
+        await session.commit()
+
+        assert result.outcome == Outcome.ACCEPTED
+        assert result.order.token == before, "токен подменили задним числом"
+        assert result.order.status == OrderStatus.AWAITING_CREDENTIALS
+
+
+async def test_two_confirmations_at_once_accept_only_one(session_factory) -> None:
+    """Два одновременных подтверждения — один приём оплаты.
+
+    Кнопку «Проверить оплату» нажимают дважды подряд, и ровно в этот момент
+    может подоспеть поллер. Без блокировки строки обе проверки читают заказ
+    в состоянии «оплачен», обе считают себя первыми, и покупателя дважды
+    просят прислать реквизиты, а в платёжный журнал ложится вторая запись.
+
+    Последовательные вызовы эту поломку не видят: второй читает уже
+    изменённый статус. Нужна именно одновременность.
+    """
+    async with session_factory() as session:
+        order, _, _ = await _make_pending_order(session)
+        order.status = OrderStatus.PAID
+        order.paid_at = utcnow()
+        await session.commit()
+        order_id = order.id
+        total_kop = order.total_kop
+
+    async def confirm() -> str:
+        async with session_factory() as session:
+            provider = FakeProvider()
+            provider.status = PayStatus.CONFIRMED
+            provider.amount_kop = total_kop
+            provider.payload = str(order_id)
+            result = await payments_service.confirm_order(
+                session, FakeRegistry(provider), order_id, "button"
+            )
+            await session.commit()
+            return result.outcome
+
+    outcomes = await asyncio.gather(confirm(), confirm())
+
+    assert sorted(outcomes) == [Outcome.ACCEPTED, Outcome.ALREADY], (
+        f"оплату приняли дважды: {outcomes}"
+    )
+
+    async with session_factory() as session:
+        order = await orders_repo.get(session, order_id)
+        assert order.status == OrderStatus.AWAITING_CREDENTIALS
+        assert order.token
+
+
+async def test_failed_balance_payment_leaves_no_trace_of_payment(session_factory) -> None:
+    """Нехватка денег не должна оставить заказ помеченным оплаченным.
+
+    `InsufficientFunds` перехватывается внутри `pay_with_balance` и наружу не
+    уходит, поэтому сессия спокойно коммитится. Если статус успели поставить
+    до списания, заказ останется оплаченным без единой копейки — и уйдёт
+    в работу бесплатно.
+
+    Проверяется именно СОХРАНЁННОЕ состояние, в отдельной сессии: до коммита
+    поломка выглядит одинаково в обоих вариантах кода.
+    """
+    async with session_factory() as session:
+        user = await make_user(session, tg_id=4242, balance_kop=1000)
+        order, _, _ = await _make_pending_order(session, user=user)
+        order.status = OrderStatus.NEW
+        await session.commit()
+        order_id, user_id = order.id, user.tg_id
+
+    async with session_factory() as session:
+        result = await payments_service.pay_with_balance(session, order_id)
+        await session.commit()
+        assert result.outcome == Outcome.FAILED
+
+    async with session_factory() as session:
+        order = await orders_repo.get(session, order_id)
+        assert order.status == OrderStatus.NEW, "заказ помечен оплаченным без оплаты"
+        assert order.token is None
+        assert order.paid_at is None
+        assert await balance_repo.ledger_balance(session, user_id) == 1000
