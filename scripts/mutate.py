@@ -234,7 +234,7 @@ MUTATIONS: list[Mutation] = [
         path="bot/services/payments.py",
         anchor="    if int(amount_kop) != int(order.total_kop):",
         replacement="    if False:  # МУТАЦИЯ",
-        tests=["tests/test_payments_db.py::test_amount_mismatch_blocks_delivery"],
+        tests=["tests/test_payments_db.py::test_amount_mismatch_blocks_credentials_request"],
         breaks="перестала сверяться сумма платежа с суммой заказа",
         guards="товар не выдаётся, если заплатили не столько",
     ),
@@ -244,7 +244,7 @@ MUTATIONS: list[Mutation] = [
         anchor='    if payload is not None and str(payload).strip() '
         'and str(payload).strip() != str(order.id):',
         replacement="    if False:  # МУТАЦИЯ",
-        tests=["tests/test_payments_db.py::test_foreign_payload_blocks_delivery"],
+        tests=["tests/test_payments_db.py::test_foreign_payload_blocks_credentials_request"],
         breaks="перестал сверяться payload платежа с номером заказа",
         guards="чужая оплата не закрывает наш заказ",
     ),
