@@ -39,10 +39,11 @@ MARK = "ДЕМО"
 DEMO_RATE_KOP = 9000
 """90,00 ₽ за доллар — правдоподобное круглое число для первого запуска."""
 
-# (название, описание, цена в центах)
+# (название категории, цвет, товары)
 CATALOG = [
     (
         f"{MARK}: Подписки",
+        "success",
         [
             (
                 "ChatGPT Plus — 1 месяц",
@@ -67,6 +68,7 @@ CATALOG = [
     ),
     (
         f"{MARK}: Инструменты",
+        "primary",
         [
             (
                 "Cursor Pro — 1 месяц",
@@ -99,11 +101,11 @@ async def seed() -> None:
             await rates_repo.add(session, DEMO_RATE_KOP, code="USD", source="demo")
             rate_note = f"курс поставлен: {format_kop(DEMO_RATE_KOP)} за $1"
 
-        for order, (title, products) in enumerate(CATALOG, start=1):
+        for order, (title, accent, products) in enumerate(CATALOG, start=1):
             existing = await session.execute(select(Category).where(Category.title == title))
             category = existing.scalar_one_or_none()
             if category is None:
-                category = Category(title=title, sort_order=order * 10)
+                category = Category(title=title, accent=accent, sort_order=order * 10)
                 session.add(category)
                 await session.flush()
 
@@ -144,7 +146,7 @@ async def seed() -> None:
     print(f"Промокод: {PROMO_CODE} — 10 %, без лимитов, на весь магазин")
     print()
     print("Цены при этом курсе (в скобках — к оплате с наценкой 10 %):")
-    for _, products in CATALOG:
+    for _, _, products in CATALOG:
         for name, _, cents in products:
             base = pricing.base_kop(cents, DEMO_RATE_KOP)
             charge = pricing.with_markup(base, 10)
