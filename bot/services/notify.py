@@ -19,7 +19,11 @@ log = logging.getLogger(__name__)
 
 
 async def notify_admins(
-    bot: Bot, session: AsyncSession, text: str, exclude: int | None = None
+    bot: Bot,
+    session: AsyncSession,
+    text: str,
+    exclude: int | None = None,
+    reply_markup=None,
 ) -> int:
     """Шлёт текст всем администраторам. Возвращает число доставленных.
 
@@ -33,7 +37,7 @@ async def notify_admins(
         if exclude is not None and admin.user_id == exclude:
             continue
         try:
-            await bot.send_message(admin.user_id, text)
+            await bot.send_message(admin.user_id, text, reply_markup=reply_markup)
             delivered += 1
         except TelegramAPIError as exc:
             log.warning("Не доставлено админу %s: %s", admin.user_id, exc)

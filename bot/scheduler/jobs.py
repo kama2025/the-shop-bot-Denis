@@ -1,16 +1,19 @@
 """Фоновые задания.
 
-Два задания, оба обязательные.
+Три задания.
 
-* `expire_orders` — освобождает просроченные резервы. Без него позиции склада
-  зависают в резерве навсегда, остаток тает, а товар «есть, но не продаётся».
+* `expire_orders` — закрывает счета, по которым не заплатили. Оплаченные заказы
+  сюда не попадают: деньги, за которые работа не сделана, по таймауту не сгорают.
 * `poll_payments` — досверяет платежи. Callback может не дойти; покупатель,
-  оплативший в момент перезапуска бота, иначе останется без товара.
+  оплативший в момент перезапуска бота, иначе останется без заказа.
+* `refresh_rate` — тянет курс ЦБ. Без него магазин работает на последнем
+  известном курсе, а на первом запуске не работает вовсе.
 """
 
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timezone
 
 from aiogram import Bot
 from aiogram.exceptions import TelegramAPIError
@@ -20,10 +23,10 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from bot.db.session import session_scope
 from bot.payments import poller
 from bot.payments.registry import PaymentRegistry
-from bot.services import delivery as delivery_service
-from bot.services import dispatch as dispatch_service
+from bot.services import currency as currency_service
 from bot.services import orders as orders_service
 from bot.services import payments as payments_service
+from bot.services import rates as rates_service
 from bot.services.texts import text_service
 
 log = logging.getLogger(__name__)
@@ -60,23 +63,46 @@ async def poll_payments(
 ) -> None:
     results = await poller.sweep(session_factory, registry)
     for result in results:
-        if result.outcome != payments_service.Outcome.DELIVERED or result.order is None:
+        if not result.accepted_now or result.order is None:
             continue
-        # Поллер нашёл оплату раньше покупателя — сообщаем сами.
+        # Поллер нашёл оплату раньше покупателя — просим реквизиты сами.
         async with session_scope(session_factory) as session:
             text = await text_service.get(
                 session,
-                "delivery",
+                "ask_credentials",
                 order_id=result.order.id,
                 title=result.order.product_title,
-                qty=result.order.qty,
-                items=delivery_service.format_items(result.items),
+                token=result.order.token or "",
             )
         try:
             await bot.send_message(result.order.user_id, text)
-            await dispatch_service.send_items(bot, result.order.user_id, result.items)
         except TelegramAPIError as exc:
-            log.warning("Не доставили товар в чат: %s", exc)
+            log.warning("Не смогли попросить реквизиты: %s", exc)
+
+
+async def refresh_rate(session_factory: async_sessionmaker[AsyncSession]) -> None:
+    """Обновляет курс ЦБ.
+
+    Неудача не считается аварией: в базе остаётся прошлое значение, и магазин
+    продолжает работать на нём. Аварией было бы продавать по выдуманному курсу.
+    """
+    import aiohttp
+
+    try:
+        async with aiohttp.ClientSession(
+            timeout=aiohttp.ClientTimeout(total=15)
+        ) as client:
+            rate_kop = await rates_service.fetch_cbr(client)
+    except rates_service.RateError as exc:
+        log.warning("Курс ЦБ не обновлён: %s", exc)
+        return
+    except Exception as exc:  # noqa: BLE001 — задание не должно ронять планировщик
+        log.warning("Курс ЦБ не обновлён, неожиданная ошибка: %s", exc)
+        return
+
+    async with session_scope(session_factory) as session:
+        await currency_service.rate_store.store(session, rate_kop)
+    log.info("Курс ЦБ обновлён: %s коп. за $1", rate_kop)
 
 
 def setup(
@@ -104,4 +130,16 @@ def setup(
             max_instances=1,
             coalesce=True,
         )
+    scheduler.add_job(
+        refresh_rate,
+        "interval",
+        hours=1,
+        args=(session_factory,),
+        id="refresh_rate",
+        max_instances=1,
+        coalesce=True,
+        # Первый запуск — сразу: без курса магазин не продаёт, и ждать час
+        # после старта нельзя.
+        next_run_time=datetime.now(timezone.utc),
+    )
     return scheduler

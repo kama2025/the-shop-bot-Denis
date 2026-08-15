@@ -109,7 +109,11 @@ async def purchase_card(
 
     lines = [
         f"🧾 <b>Заказ #{order.id}</b>",
-        f"📦 {html.escape(order.product_title)} — {order.qty} шт.",
+        f"📦 {html.escape(order.product_title)}",
+    ]
+    if order.token:
+        lines.append(f"🎟 Токен: <code>{order.token}</code>")
+    lines += [
         f"📅 {order.created_at.strftime('%d.%m.%Y %H:%M')}",
         f"💰 Итого: {format_kop(order.total_kop)}",
     ]
@@ -119,9 +123,13 @@ async def purchase_card(
         )
     lines.append(f"📌 {OrderStatus.TITLES.get(order.status, order.status)}")
 
-    if order.status == OrderStatus.DELIVERED and order.kind == OrderKind.PURCHASE:
-        items = await delivery_service.items_of(session, order.id)
-        lines += ["", "━━━━━━━━━━━━━━━━━━", delivery_service.format_items(items)]
+    # Оплаченный заказ без реквизитов — тупик, если из него некуда нажать.
+    # Покупатель мог закрыть чат на полпути, и вернуть его должна кнопка,
+    # а не просьба «напишите в поддержку».
+    if delivery_service.needs_credentials(order) and order.kind == OrderKind.PURCHASE:
+        lines += ["", "🔑 Осталось прислать логин и пароль от аккаунта."]
+        await show(call, "\n".join(lines), user_kb.send_credentials(order.id))
+        return
 
     await show(call, "\n".join(lines), user_kb.simple_back("u:purchases:0"))
 

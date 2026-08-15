@@ -19,8 +19,8 @@ from bot.handlers.admin import (
     orders as admin_orders,
     people as admin_people,
     products as admin_products,
+    product_wizard as admin_product_wizard,
     promo as admin_promo,
-    stock as admin_stock,
 )
 from bot.handlers.user import catalog as user_catalog
 from bot.handlers.user import profile as user_profile
@@ -33,7 +33,7 @@ def build_router() -> Router:
     root.include_router(admin_menu.router)
     root.include_router(admin_categories.router)
     root.include_router(admin_products.router)
-    root.include_router(admin_stock.router)
+    root.include_router(admin_product_wizard.router)
     root.include_router(admin_orders.router)
     root.include_router(admin_promo.router)
     root.include_router(admin_broadcast.router)

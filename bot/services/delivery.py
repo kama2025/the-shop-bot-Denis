@@ -1,17 +1,17 @@
-"""Выдача товара.
+"""Исполнение заказа.
 
-Единственное место, где купленное попадает покупателю. Функция идемпотентна:
-сколько бы раз её ни вызвали и в каком бы порядке ни пришли callback, нажатие
-кнопки и опрос поллера — товар выдаётся один раз.
+Единственное место, где оплаченный заказ движется дальше. Три перехода, и у
+каждого своё условие:
 
-Три типа выдачи, задаются при создании товара:
+    оплачен → ждёт реквизиты   `start` — после подтверждения оплаты, выдаёт токен
+    ждёт реквизиты → в работе  `accept_credentials` — покупатель прислал логин и пароль
+    в работе → выполнен        `confirm_done` — администратор подтвердил
 
-* `text`   — позиция склада это текст: ссылка, ключ, логин с паролем;
-* `file`   — позиция склада это файл: архив, документ, картинка;
-* `manual` — склада нет, после оплаты администратор связывается с покупателем.
-
-Тип берётся из **заказа**, а не из товара: товар могли переименовать или
-переключить после продажи, а заказ обязан завершиться так, как был оформлен.
+Все три идемпотентны. Подтверждение оплаты приходит тремя путями (callback
+провайдера, кнопка «Проверить оплату», фоновый поллер), кнопки в Telegram
+нажимаются дважды, а уведомление администратору не должно уходить второй раз.
+Вызывающий обязан держать заказ под блокировкой строки
+(`orders_repo.get_for_update`) — иначе идемпотентность держится на удаче.
 """
 
 from __future__ import annotations
@@ -21,223 +21,119 @@ from dataclasses import dataclass
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.db.base import utcnow
-from bot.db.models import DeliveryType, Order, OrderStatus, StockItem, StockStatus
+from bot.db.models import Order, OrderStatus
 from bot.logger import payment_log
 from bot.repo import orders as orders_repo
-from bot.repo import stock as stock_repo
+from bot.services import tokens
 
 
 @dataclass(frozen=True)
-class DeliveredItem:
-    """Одна выданная позиция."""
-
-    content: str
-    file_id: str | None = None
-    file_kind: str | None = None
-    file_name: str | None = None
-
-    @property
-    def is_file(self) -> bool:
-        return bool(self.file_id)
-
-
-@dataclass(frozen=True)
-class DeliveryResult:
+class StepResult:
     ok: bool
-    items: list[DeliveredItem]
-    already_delivered: bool = False
-    shortage: bool = False
-    manual: bool = False
-
-    @property
-    def contents(self) -> list[str]:
-        return [item.content for item in self.items]
+    order: Order | None = None
+    repeated: bool = False
+    """Шаг уже был сделан раньше — состояние не менялось."""
 
 
-def _to_item(row: StockItem) -> DeliveredItem:
-    return DeliveredItem(
-        content=row.content,
-        file_id=row.file_id,
-        file_kind=row.file_kind,
-        file_name=row.file_name,
-    )
+async def start(session: AsyncSession, order: Order) -> StepResult:
+    """Оплата подтверждена: выдаём токен и просим реквизиты.
 
-
-async def deliver(session: AsyncSession, order: Order) -> DeliveryResult:
-    """Завершает оплаченный заказ.
-
-    Вызывающий обязан держать заказ под блокировкой строки
-    (`orders_repo.get_for_update`) — иначе идемпотентность держится на удаче.
+    Токен выдаётся здесь и только здесь — в той же транзакции, что и смена
+    статуса. Выдать его раньше значило бы назвать номер заказа, за который
+    ещё не заплачено; выдать позже — оставить покупателя без идентификатора
+    в промежутке, когда деньги уже списаны.
     """
-    if order.status == OrderStatus.DELIVERED:
-        return DeliveryResult(
-            ok=True, items=await items_of(session, order.id), already_delivered=True
-        )
+    if order.status in (OrderStatus.AWAITING_CREDENTIALS, OrderStatus.IN_WORK, OrderStatus.DELIVERED):
+        return StepResult(ok=True, order=order, repeated=True)
 
-    if order.delivery_type == DeliveryType.MANUAL:
-        return await _await_manual(session, order)
+    if order.status != OrderStatus.PAID:
+        return StepResult(ok=False, order=order)
 
-    if order.status not in (OrderStatus.PAID, OrderStatus.DELIVERED):
-        return DeliveryResult(ok=False, items=[])
+    if not order.token:
+        async def exists(candidate: str) -> bool:
+            return await orders_repo.token_exists(session, candidate)
 
-    rows = [
-        row
-        for row in await stock_repo.items_of_order(session, order.id)
-        if row.status in (StockStatus.RESERVED, StockStatus.SOLD)
-    ]
+        order.token = await tokens.generate_unique(exists)
 
-    if len(rows) < order.qty:
-        # Оплата прошла, а склада не хватило: позиции могли забраковать между
-        # резервом и оплатой. Молчать нельзя — и покупателю, и админам нужно
-        # узнать об этом сразу.
-        payment_log.error(
-            "Не хватает позиций для выдачи",
-            extra={
-                "order_id": order.id,
-                "user_id": order.user_id,
-                "need": order.qty,
-                "have": len(rows),
-            },
-        )
-        return DeliveryResult(ok=False, items=[], shortage=True)
-
-    await stock_repo.mark_sold(session, order.id)
-    for row in rows:
-        if row.sold_at is None:
-            row.sold_at = utcnow()
-
-    existing = {link.stock_item_id for link in await orders_repo.items_of(session, order.id)}
-    fresh = [row.id for row in rows if row.id not in existing]
-    if fresh:
-        await orders_repo.add_items(session, order.id, fresh)
-
-    order.status = OrderStatus.DELIVERED
-    order.delivered_at = utcnow()
+    order.status = OrderStatus.AWAITING_CREDENTIALS
     await session.flush()
 
     payment_log.info(
-        "Товар выдан",
+        "Заказ ждёт реквизиты",
         extra={
             "order_id": order.id,
             "user_id": order.user_id,
-            "qty": order.qty,
-            "type": order.delivery_type,
+            "token": order.token,
+            "product": order.product_title,
             "total_kop": order.total_kop,
         },
     )
-    return DeliveryResult(ok=True, items=[_to_item(row) for row in rows])
+    return StepResult(ok=True, order=order)
 
 
-async def _await_manual(session: AsyncSession, order: Order) -> DeliveryResult:
-    """Ставит заказ в очередь на ручную выдачу.
+async def accept_credentials(
+    session: AsyncSession, order: Order, login: str, password: str
+) -> StepResult:
+    """Покупатель прислал логин и пароль — заказ уходит в работу.
 
-    Заказ не считается выданным: он висит в `awaiting`, пока администратор не
-    отправит покупателю то, что тот купил. Помечать такой заказ выданным сразу
-    после оплаты нельзя — тогда он потеряется среди завершённых, и человек
-    останется без товара.
+    Пустой логин или пустой пароль не принимаются. Заказ, ушедший к
+    администратору с половиной реквизитов, выглядит как готовый к работе, а
+    работать по нему нельзя — и выяснится это, когда покупатель уже ждёт.
     """
-    if order.status == OrderStatus.AWAITING:
-        return DeliveryResult(ok=True, items=[], manual=True, already_delivered=True)
+    login = (login or "").strip()
+    password = (password or "").strip()
+    if not login or not password:
+        return StepResult(ok=False, order=order)
 
-    order.status = OrderStatus.AWAITING
+    if order.status in (OrderStatus.IN_WORK, OrderStatus.DELIVERED):
+        return StepResult(ok=True, order=order, repeated=True)
+
+    if order.status != OrderStatus.AWAITING_CREDENTIALS:
+        return StepResult(ok=False, order=order)
+
+    order.account_login = login
+    order.account_password = password
+    order.credentials_at = utcnow()
+    order.status = OrderStatus.IN_WORK
     await session.flush()
+
     payment_log.info(
-        "Заказ ждёт ручной выдачи",
-        extra={
-            "order_id": order.id,
-            "user_id": order.user_id,
-            "product": order.product_title,
-            "qty": order.qty,
-        },
+        "Реквизиты получены",
+        extra={"order_id": order.id, "user_id": order.user_id, "token": order.token},
     )
-    return DeliveryResult(ok=True, items=[], manual=True)
+    return StepResult(ok=True, order=order)
 
 
-async def complete_manual(
-    session: AsyncSession,
-    order: Order,
-    admin_id: int,
-    item: DeliveredItem,
-) -> DeliveryResult:
-    """Закрывает заказ ручной выдачи тем, что администратор отправил покупателю.
+async def confirm_done(session: AsyncSession, order: Order, admin_id: int) -> StepResult:
+    """Администратор подтвердил выполнение.
 
-    Отправленное записывается позицией склада со статусом «продана»: история
-    покупок и карточка заказа тогда работают одинаково для всех типов, и
-    «что именно выдали» можно посмотреть спустя месяц.
+    Повторное нажатие возвращает `repeated=True` и не трогает заказ: иначе
+    покупатель получит второе «заказ выполнен», а в журнале появится второй
+    исполнитель.
     """
     if order.status == OrderStatus.DELIVERED:
-        return DeliveryResult(
-            ok=True, items=await items_of(session, order.id), already_delivered=True
-        )
-    if order.status not in (OrderStatus.AWAITING, OrderStatus.PAID):
-        return DeliveryResult(ok=False, items=[])
+        return StepResult(ok=True, order=order, repeated=True)
 
-    row = StockItem(
-        product_id=order.product_id,
-        content=item.content,
-        file_id=item.file_id,
-        file_kind=item.file_kind,
-        file_name=item.file_name,
-        status=StockStatus.SOLD,
-        order_id=order.id,
-        sold_at=utcnow(),
-    )
-    session.add(row)
-    await session.flush()
-    await orders_repo.add_items(session, order.id, [row.id])
+    if order.status != OrderStatus.IN_WORK:
+        return StepResult(ok=False, order=order)
 
     order.status = OrderStatus.DELIVERED
     order.delivered_at = utcnow()
+    order.delivered_by = admin_id
     await session.flush()
 
     payment_log.info(
-        "Ручная выдача завершена",
-        extra={"order_id": order.id, "user_id": order.user_id, "admin_id": admin_id},
+        "Заказ выполнен",
+        extra={
+            "order_id": order.id,
+            "user_id": order.user_id,
+            "token": order.token,
+            "admin_id": admin_id,
+        },
     )
-    return DeliveryResult(ok=True, items=[_to_item(row)])
+    return StepResult(ok=True, order=order)
 
 
-async def items_of(session: AsyncSession, order_id: int) -> list[DeliveredItem]:
-    """Что было выдано по заказу — для истории покупок и карточки в админке."""
-    result: list[DeliveredItem] = []
-    for link in await orders_repo.items_of(session, order_id):
-        row = await session.get(StockItem, link.stock_item_id)
-        if row is not None:
-            result.append(_to_item(row))
-    return result
-
-
-async def contents_of(session: AsyncSession, order_id: int) -> list[str]:
-    return [item.content for item in await items_of(session, order_id)]
-
-
-def format_items(items: list[DeliveredItem]) -> str:
-    """Оформляет выданное в сообщение.
-
-    Текст каждой позиции отдельным блоком `<code>`: так его удобно скопировать
-    одним касанием, и Telegram не превращает ссылку в предпросмотр. Файлы
-    отправляются отдельными сообщениями, здесь они только перечислены.
-    """
-    if not items:
-        return "—"
-
-    blocks: list[str] = []
-    for index, item in enumerate(items, start=1):
-        prefix = f"<b>{index}.</b> " if len(items) > 1 else ""
-        if item.is_file:
-            name = _escape(item.file_name or "файл")
-            note = f"\n<code>{_escape(item.content)}</code>" if item.content.strip() else ""
-            blocks.append(f"{prefix}📎 {name} — отправлен отдельным сообщением{note}")
-        else:
-            body = f"<code>{_escape(item.content)}</code>"
-            blocks.append(f"{prefix}\n{body}" if prefix else body)
-    return "\n\n".join(blocks)
-
-
-def format_contents(contents: list[str]) -> str:
-    """Совместимость со старым вызовом: список строк без файлов."""
-    return format_items([DeliveredItem(content=text) for text in contents])
-
-
-def _escape(value: str) -> str:
-    return value.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+def needs_credentials(order: Order) -> bool:
+    """Ждёт ли заказ логин с паролем от покупателя."""
+    return order.status == OrderStatus.AWAITING_CREDENTIALS

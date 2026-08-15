@@ -7,7 +7,7 @@ from datetime import datetime
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from bot.db.models import Order, OrderItem, OrderStatus, Payment
+from bot.db.models import Order, OrderStatus, Payment
 
 
 async def get(session: AsyncSession, order_id: int) -> Order | None:
@@ -141,16 +141,14 @@ async def expired_candidates(session: AsyncSession, now: datetime, limit: int = 
     return list((await session.execute(stmt)).scalars().all())
 
 
-async def add_items(session: AsyncSession, order_id: int, stock_item_ids: list[int]) -> None:
-    session.add_all(
-        OrderItem(order_id=order_id, stock_item_id=item_id) for item_id in stock_item_ids
-    )
-    await session.flush()
+async def token_exists(session: AsyncSession, token: str) -> bool:
+    stmt = select(Order.id).where(Order.token == token).limit(1)
+    return (await session.execute(stmt)).scalar_one_or_none() is not None
 
 
-async def items_of(session: AsyncSession, order_id: int) -> list[OrderItem]:
-    stmt = select(OrderItem).where(OrderItem.order_id == order_id).order_by(OrderItem.id)
-    return list((await session.execute(stmt)).scalars().all())
+async def by_token(session: AsyncSession, token: str) -> Order | None:
+    stmt = select(Order).where(Order.token == token)
+    return (await session.execute(stmt)).scalar_one_or_none()
 
 
 async def log_payment(

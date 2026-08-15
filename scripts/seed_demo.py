@@ -2,7 +2,12 @@
 """Демонстрационное наполнение каталога.
 
 Нужно, чтобы магазин можно было потрогать сразу после запуска: пустой каталог
-не даёт проверить ни покупку, ни выдачу, ни промокод.
+не даёт проверить ни покупку, ни сбор реквизитов, ни промокод.
+
+Кроме товаров скрипт кладёт **курс доллара**. Без курса магазин честно
+отказывается продавать, и первый же запуск без интернета выглядел бы как
+поломка. Курс помечен источником `demo` — настоящий приедет от ЦБ в течение
+часа и заменит его собой.
 
 Всё созданное помечено словом «ДЕМО» в названии и удаляется из админки за
 несколько нажатий либо этим же скриптом с `--clean`.
@@ -23,43 +28,40 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from sqlalchemy import delete, select  # noqa: E402
 
 from bot.config import get_settings  # noqa: E402
-from bot.db.models import (  # noqa: E402
-    Category,
-    Product,
-    PromoCode,
-    StockBatch,
-    StockItem,
-)
+from bot.db.models import Category, ExchangeRate, Order, Product, PromoCode  # noqa: E402
 from bot.db.session import make_engine, make_session_factory, session_scope  # noqa: E402
-from bot.repo import stock as stock_repo  # noqa: E402
-from bot.utils.money import DISCOUNT_PERCENT  # noqa: E402
+from bot.repo import rates as rates_repo  # noqa: E402
+from bot.services import pricing  # noqa: E402
+from bot.utils.money import DISCOUNT_PERCENT, format_kop  # noqa: E402
 
 MARK = "ДЕМО"
 
+DEMO_RATE_KOP = 9000
+"""90,00 ₽ за доллар — правдоподобное круглое число для первого запуска."""
+
+# (название, описание, цена в центах)
 CATALOG = [
     (
         f"{MARK}: Подписки",
         [
             (
-                "Gemini Pro 12 мес.",
-                "▪️ Выдача: подарочной ссылкой\n"
-                "▪️ Гарантия: 2 часа с момента выдачи\n"
-                "▪️ Активировать просто — перейти по ссылке",
-                9000,
-                [
-                    "https://gemini.google.com/gift/DEMO-AAA-111",
-                    "https://gemini.google.com/gift/DEMO-BBB-222",
-                    "https://gemini.google.com/gift/DEMO-CCC-333",
-                ],
+                "ChatGPT Plus — 1 месяц",
+                "▪️ Оплата вашего аккаунта на месяц\n"
+                "▪️ Нужен доступ: логин и пароль\n"
+                "▪️ Срок выполнения: до 2 часов",
+                2000,
             ),
             (
-                "ChatGPT Plus 1 мес.",
-                "▪️ Выдача: логин и пароль\n▪️ Гарантия: 2 часа",
-                45000,
-                [
-                    "login: demo1@example.com\npass: DemoPass111\nСрок: 1 мес.",
-                    "login: demo2@example.com\npass: DemoPass222\nСрок: 1 мес.",
-                ],
+                "Netflix Premium — 1 месяц",
+                "▪️ Продление вашей подписки\n"
+                "▪️ Нужен доступ: логин и пароль\n"
+                "▪️ 4K, четыре экрана",
+                1999,
+            ),
+            (
+                "Spotify Premium — 3 месяца",
+                "▪️ Продление на три месяца\n▪️ Нужен доступ: логин и пароль",
+                3050,
             ),
         ],
     ),
@@ -67,10 +69,14 @@ CATALOG = [
         f"{MARK}: Инструменты",
         [
             (
-                "Cursor Pro 1 мес.",
-                "▪️ Выдача: код активации",
-                30000,
-                ["CURSOR-DEMO-KEY-0001", "CURSOR-DEMO-KEY-0002"],
+                "Cursor Pro — 1 месяц",
+                "▪️ Оплата вашего аккаунта\n▪️ Нужен доступ: логин и пароль",
+                2000,
+            ),
+            (
+                "Midjourney Basic — 1 месяц",
+                "▪️ Оплата вашего аккаунта\n▪️ Нужен доступ: логин и пароль",
+                1000,
             ),
         ],
     ),
@@ -84,9 +90,14 @@ async def seed() -> None:
     engine = make_engine(settings)
     factory = make_session_factory(engine)
 
+    created_products = 0
+    rate_note = "курс уже был"
+
     async with session_scope(factory) as session:
-        created_products = 0
-        created_items = 0
+        # Курс — первым делом: без него каталог покажет цены только в долларах.
+        if await rates_repo.latest(session, "USD") is None:
+            await rates_repo.add(session, DEMO_RATE_KOP, code="USD", source="demo")
+            rate_note = f"курс поставлен: {format_kop(DEMO_RATE_KOP)} за $1"
 
         for order, (title, products) in enumerate(CATALOG, start=1):
             existing = await session.execute(select(Category).where(Category.title == title))
@@ -96,27 +107,22 @@ async def seed() -> None:
                 session.add(category)
                 await session.flush()
 
-            for product_order, (name, description, price_kop, items) in enumerate(
+            for product_order, (name, description, price_usd_cents) in enumerate(
                 products, start=1
             ):
                 found = await session.execute(select(Product).where(Product.title == name))
                 if found.scalar_one_or_none() is not None:
                     continue
-                product = Product(
-                    category_id=category.id,
-                    title=name,
-                    description=description,
-                    price_kop=price_kop,
-                    sort_order=product_order * 10,
+                session.add(
+                    Product(
+                        category_id=category.id,
+                        title=name,
+                        description=description,
+                        price_usd_cents=price_usd_cents,
+                        sort_order=product_order * 10,
+                    )
                 )
-                session.add(product)
-                await session.flush()
                 created_products += 1
-
-                await stock_repo.add_batch(
-                    session, product.id, items, admin_id=None, note="демо-завоз"
-                )
-                created_items += len(items)
 
         found = await session.execute(select(PromoCode).where(PromoCode.code == PROMO_CODE))
         if found.scalar_one_or_none() is None:
@@ -132,8 +138,22 @@ async def seed() -> None:
             )
 
     await engine.dispose()
-    print(f"Создано товаров: {created_products}, позиций на складе: {created_items}")
+
+    print(f"Создано товаров: {created_products}")
+    print(rate_note)
     print(f"Промокод: {PROMO_CODE} — 10 %, без лимитов, на весь магазин")
+    print()
+    print("Цены при этом курсе (в скобках — к оплате с наценкой 10 %):")
+    for _, products in CATALOG:
+        for name, _, cents in products:
+            base = pricing.base_kop(cents, DEMO_RATE_KOP)
+            charge = pricing.with_markup(base, 10)
+            print(
+                f"  {pricing.format_usd(cents):>8}  {format_kop(base):>12}"
+                f"  ({format_kop(charge)})   {name}"
+            )
+    print()
+    print("У товаров нет картинок — их добавляет админ через «Выложить товар».")
 
 
 async def clean() -> None:
@@ -141,13 +161,15 @@ async def clean() -> None:
     engine = make_engine(settings)
     factory = make_session_factory(engine)
 
+    removed = 0
+    kept = 0
+
     async with session_scope(factory) as session:
         categories = (
             (await session.execute(select(Category).where(Category.title.like(f"{MARK}%"))))
             .scalars()
             .all()
         )
-        removed = 0
         for category in categories:
             products = (
                 (await session.execute(select(Product).where(Product.category_id == category.id)))
@@ -155,22 +177,15 @@ async def clean() -> None:
                 .all()
             )
             for product in products:
-                # Проданные позиции связаны с заказами: их не трогаем, товар
-                # просто выключаем — история покупок важнее чистоты каталога.
+                # Товар, по которому были заказы, не удаляем: `orders.product_id`
+                # ссылается на него, и в истории покупателя останется дыра.
                 sold = await session.execute(
-                    select(StockItem).where(
-                        StockItem.product_id == product.id, StockItem.status == "sold"
-                    )
+                    select(Order.id).where(Order.product_id == product.id).limit(1)
                 )
-                if sold.scalars().first() is not None:
+                if sold.scalar_one_or_none() is not None:
                     product.is_active = False
+                    kept += 1
                     continue
-                await session.execute(
-                    delete(StockItem).where(StockItem.product_id == product.id)
-                )
-                await session.execute(
-                    delete(StockBatch).where(StockBatch.product_id == product.id)
-                )
                 await session.delete(product)
                 removed += 1
             await session.flush()
@@ -184,10 +199,13 @@ async def clean() -> None:
                 category.is_active = False
 
         await session.execute(delete(PromoCode).where(PromoCode.code == PROMO_CODE))
+        # Демонстрационный курс убираем, настоящий от ЦБ не трогаем.
+        await session.execute(delete(ExchangeRate).where(ExchangeRate.source == "demo"))
 
     await engine.dispose()
     print(f"Удалено демо-товаров: {removed}")
-    print("Товары с продажами не удалены, а выключены — история заказов сохранена.")
+    if kept:
+        print(f"Выключено, но не удалено (есть заказы): {kept} — история сохранена.")
 
 
 def main() -> int:

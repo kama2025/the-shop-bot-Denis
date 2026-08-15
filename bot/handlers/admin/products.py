@@ -11,12 +11,10 @@ from aiogram.types import CallbackQuery, Message
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.config import Settings
-from bot.db.models import DeliveryType
 from bot.handlers.admin.common import guard
 from bot.keyboards import admin as admin_kb
 from bot.repo import audit as audit_repo
 from bot.repo import catalog as catalog_repo
-from bot.repo import stock as stock_repo
 from bot.services.access import Actor
 from bot.states.admin import ProductSG
 from bot.utils.money import PriceParseError, format_kop, parse_price_to_kop
@@ -45,13 +43,10 @@ async def list_products(
 
     items = await catalog_repo.list_products(session, category_id, only_active=False)
     chunk = paginate(items, page, PER_PAGE)
-    counts = await catalog_repo.stock_counts(session, [p.id for p in chunk.items])
     text = f"📦 <b>Товары: {html.escape(category.title)}</b> — всего {chunk.total}"
     if chunk.is_empty:
         text += "\n\nПока ни одного."
-    await show(
-        call, text, admin_kb.products(chunk.items, counts, category_id, chunk.page, chunk.pages)
-    )
+    await show(call, text, admin_kb.products(chunk.items, category_id, chunk.page, chunk.pages))
 
 
 @router.callback_query(F.data.startswith("a:prod:"))
@@ -67,244 +62,20 @@ async def product_card(
         await call.answer("Товар удалён", show_alert=True)
         return
 
-    counts = await stock_repo.counts_by_status(session, product_id)
     category = await catalog_repo.get_category(session, product.category_id)
     text = (
         f"📦 <b>{html.escape(product.title)}</b>\n\n"
         f"Категория: {html.escape(category.title if category else '—')}\n"
-        f"Цена: {format_kop(product.price_kop)}\n"
-        f"Выдача: {DeliveryType.TITLES.get(product.delivery_type, product.delivery_type)}\n"
+        f"Цена: {format_usd(product.price_usd_cents)}\n"
         f"Порядок: {product.sort_order}\n"
         f"Статус: {'🟢 в продаже' if product.is_active else '🔴 снят'}\n"
         f"Картинка: {'есть' if (product.image_file_id or product.image_path) else 'нет'}\n\n"
-        f"<b>Склад:</b> свободно {counts['available']}, в резерве {counts['reserved']}, "
-        f"продано {counts['sold']}, брак {counts['defective']}\n\n"
         f"Описание:\n{html.escape((product.description or '—')[:600])}"
     )
     await show(call, text, admin_kb.product_card(product))
 
 
 # --- создание ---------------------------------------------------------------
-
-
-@router.callback_query(F.data.startswith("a:prod_add:"))
-async def ask_delivery_type(
-    call: CallbackQuery, actor: Actor, state: FSMContext, **_: object
-) -> None:
-    if not await guard(call, actor):
-        return
-    await call.answer()
-    category_id = int(call.data.split(":")[2])
-    await state.set_state(ProductSG.delivery_type)
-    await state.update_data(category_id=category_id)
-
-    lines = ["Шаг 1 из 5. <b>Как этот товар попадает к покупателю?</b>", ""]
-    for kind in DeliveryType.ALL:
-        lines.append(f"<b>{DeliveryType.TITLES[kind]}</b>\n{DeliveryType.HINTS[kind]}\n")
-    await show(call, "\n".join(lines), admin_kb.delivery_type_picker(category_id))
-
-
-@router.callback_query(F.data.startswith("a:prod_type:"), ProductSG.delivery_type)
-async def got_delivery_type(
-    call: CallbackQuery, actor: Actor, state: FSMContext, **_: object
-) -> None:
-    if not await guard(call, actor):
-        return
-    parts = call.data.split(":")
-    category_id, kind = int(parts[2]), parts[3]
-    if kind not in DeliveryType.ALL:
-        await call.answer("Неизвестный тип выдачи", show_alert=True)
-        return
-
-    await call.answer()
-    await state.update_data(delivery_type=kind, category_id=category_id)
-    await state.set_state(ProductSG.title)
-    await show(
-        call,
-        f"Тип: <b>{DeliveryType.TITLES[kind]}</b>\n\nШаг 2 из 5. Отправьте название товара:",
-        admin_kb.confirm("noop", f"a:prods:{category_id}:0", yes_text="…"),
-    )
-
-
-@router.callback_query(F.data.startswith("a:prod_type_edit:"))
-async def ask_change_type(
-    call: CallbackQuery, session: AsyncSession, actor: Actor, **_: object
-) -> None:
-    if not await guard(call, actor):
-        return
-    await call.answer()
-    product_id = int(call.data.split(":")[2])
-    product = await catalog_repo.get_product(session, product_id)
-    if product is None:
-        await call.answer("Товар удалён", show_alert=True)
-        return
-
-    counts = await stock_repo.counts_by_status(session, product_id)
-    warning = ""
-    if counts["available"] or counts["reserved"]:
-        warning = (
-            f"\n\n⚠️ На складе {counts['available']} свободных и "
-            f"{counts['reserved']} зарезервированных позиций. При смене типа они "
-            "останутся на месте, но выдаваться будут по-новому — проверьте, что "
-            "содержимое подходит."
-        )
-    lines = [
-        f"🚚 Сейчас: <b>{DeliveryType.TITLES.get(product.delivery_type, product.delivery_type)}</b>",
-        "",
-    ]
-    for kind in DeliveryType.ALL:
-        lines.append(f"<b>{DeliveryType.TITLES[kind]}</b>\n{DeliveryType.HINTS[kind]}\n")
-    await show(call, "\n".join(lines) + warning, admin_kb.delivery_type_switch(product_id))
-
-
-@router.callback_query(F.data.startswith("a:prod_settype:"))
-async def change_type(
-    call: CallbackQuery, session: AsyncSession, actor: Actor, **_: object
-) -> None:
-    if not await guard(call, actor):
-        return
-    parts = call.data.split(":")
-    product_id, kind = int(parts[2]), parts[3]
-    if kind not in DeliveryType.ALL:
-        await call.answer("Неизвестный тип выдачи", show_alert=True)
-        return
-    product = await catalog_repo.get_product(session, product_id)
-    if product is None:
-        await call.answer("Товар удалён", show_alert=True)
-        return
-
-    before = product.delivery_type
-    product.delivery_type = kind
-    await audit_repo.record(
-        session, actor.user_id, "product.delivery_type", "product", product_id,
-        {"before": before, "after": kind},
-    )
-    # Уже оформленные заказы не трогаем: в каждом лежит снимок типа, и они
-    # завершатся так, как были куплены.
-    await call.answer(f"Тип выдачи: {DeliveryType.TITLES[kind]}")
-    call.data = f"a:prod:{product_id}"
-    await product_card(call, session, actor)
-
-
-@router.message(ProductSG.title)
-async def got_title(
-    message: Message, actor: Actor, state: FSMContext, **_: object
-) -> None:
-    if not await guard(message, actor):
-        await state.clear()
-        return
-    title = (message.text or "").strip()
-    if not 1 <= len(title) <= 255:
-        await message.answer("Название должно быть от 1 до 255 символов.")
-        return
-    await state.update_data(title=title)
-    await state.set_state(ProductSG.description)
-    await message.answer("Шаг 3 из 5. Отправьте описание (или «-», чтобы пропустить):")
-
-
-@router.message(ProductSG.description)
-async def got_description(
-    message: Message, actor: Actor, state: FSMContext, **_: object
-) -> None:
-    if not await guard(message, actor):
-        await state.clear()
-        return
-    raw = (message.text or "").strip()
-    await state.update_data(description=None if raw == "-" else raw)
-    await state.set_state(ProductSG.price)
-    await message.answer("Шаг 4 из 5. Отправьте цену в рублях (например 90 или 90,50):")
-
-
-@router.message(ProductSG.price)
-async def got_price(
-    message: Message, actor: Actor, state: FSMContext, **_: object
-) -> None:
-    if not await guard(message, actor):
-        await state.clear()
-        return
-    try:
-        price_kop = parse_price_to_kop(message.text or "")
-    except PriceParseError as exc:
-        await message.answer(f"Не понял цену: {exc}. Попробуйте ещё раз.")
-        return
-    if price_kop <= 0:
-        await message.answer("Цена должна быть больше нуля.")
-        return
-    await state.update_data(price_kop=price_kop)
-    await state.set_state(ProductSG.image)
-    await message.answer("Шаг 5 из 5. Пришлите картинку товара или напишите «-», чтобы пропустить.")
-
-
-@router.message(ProductSG.image)
-async def got_image(
-    message: Message,
-    session: AsyncSession,
-    actor: Actor,
-    state: FSMContext,
-    settings: Settings,
-    **_: object,
-) -> None:
-    if not await guard(message, actor):
-        await state.clear()
-        return
-    data = await state.get_data()
-    image_path, image_file_id = await _extract_image(message, settings, data["title"])
-    if image_path is None and image_file_id is None and (message.text or "").strip() != "-":
-        await message.answer("Пришлите картинку или напишите «-».")
-        return
-
-    product = await catalog_repo.create_product(
-        session,
-        category_id=int(data["category_id"]),
-        title=data["title"],
-        description=data.get("description"),
-        price_kop=int(data["price_kop"]),
-        image_path=image_path,
-        image_file_id=image_file_id,
-        delivery_type=data.get("delivery_type", DeliveryType.TEXT),
-    )
-    await audit_repo.record(
-        session, actor.user_id, "product.create", "product", product.id,
-        {"title": product.title, "price_kop": product.price_kop},
-    )
-    await state.clear()
-    if product.delivery_type == DeliveryType.MANUAL:
-        tail = (
-            "Склад этому товару не нужен: после оплаты вам придёт уведомление "
-            "с контактом покупателя, а заказ будет ждать в разделе «Заказы»."
-        )
-    else:
-        tail = "Теперь залейте позиции на склад — без них товар не продаётся."
-    await message.answer(
-        f"✅ Товар «{html.escape(product.title)}» создан за {format_kop(product.price_kop)}.\n"
-        f"Тип выдачи: {DeliveryType.TITLES[product.delivery_type]}\n\n{tail}",
-        reply_markup=admin_kb.product_card(product),
-    )
-
-
-async def _extract_image(
-    message: Message, settings: Settings, title: str
-) -> tuple[str | None, str | None]:
-    if not message.photo:
-        return None, None
-    largest = message.photo[-1]
-    directory = settings.media_dir / "products"
-    directory.mkdir(parents=True, exist_ok=True)
-    safe = "".join(ch for ch in title if ch.isalnum() or ch in " -_")[:40].strip() or "product"
-    target = directory / f"{safe}-{largest.file_unique_id}.jpg"
-    await message.bot.download(largest, destination=target)
-    return str(target), largest.file_id
-
-
-# --- правка -----------------------------------------------------------------
-
-
-FIELD_PROMPTS = {
-    "title": ("Отправьте новое название:", ProductSG.edit_title),
-    "desc": ("Отправьте новое описание (или «-», чтобы очистить):", ProductSG.edit_description),
-    "price": ("Отправьте новую цену в рублях:", ProductSG.edit_price),
-    "image": ("Пришлите новую картинку (или «-», чтобы удалить):", ProductSG.edit_image),
-}
 
 
 @router.callback_query(F.data.startswith("a:prod_edit:"))
@@ -371,24 +142,26 @@ async def save_price(
         await state.clear()
         return
     try:
-        price_kop = parse_price_to_kop(message.text or "")
+        from bot.handlers.admin.product_wizard import parse_price_usd
+
+        price_cents = parse_price_usd(message.text or "")
     except PriceParseError as exc:
         await message.answer(f"Не понял цену: {exc}")
         return
-    if price_kop <= 0:
+    if price_cents <= 0:
         await message.answer("Цена должна быть больше нуля.")
         return
 
-    before = product.price_kop
-    product.price_kop = price_kop
+    before = product.price_usd_cents
+    product.price_usd_cents = price_cents
     await audit_repo.record(
         session, actor.user_id, "product.reprice", "product", product.id,
-        {"before_kop": before, "after_kop": price_kop},
+        {"before_cents": before, "after_cents": price_cents},
     )
     await state.clear()
     # Уже оформленные заказы сохраняют старую цену: в заказе лежит её снимок.
     await message.answer(
-        f"✅ Цена изменена: {format_kop(before)} → {format_kop(price_kop)}.\n"
+        f"✅ Цена изменена: {format_usd(before)} → {format_usd(price_cents)}.\n"
         "Заказы, оформленные раньше, сохраняют прежнюю цену.",
         reply_markup=admin_kb.product_card(product),
     )
@@ -519,12 +292,10 @@ async def ask_delete(
         await call.answer("Товар удалён", show_alert=True)
         return
 
-    counts = await stock_repo.counts_by_status(session, product_id)
     text = (
         f"⚠️ Удалить товар «{html.escape(product.title)}»?\n\n"
-        f"Вместе с ним удалятся позиции склада: свободных {counts['available']}, "
-        f"в резерве {counts['reserved']}, бракованных {counts['defective']}.\n"
-        f"Проданных позиций: {counts['sold']} — они останутся в истории заказов.\n\n"
+        "В заказах останется название на момент покупки, но сам товар исчезнет "
+        "из каталога навсегда.\n\n"
         "Если товар нужно просто убрать из магазина — лучше выключить его."
     )
     await show(call, text, admin_kb.confirm(f"a:prod_del_ok:{product_id}", f"a:prod:{product_id}"))
@@ -542,18 +313,6 @@ async def do_delete(
         await call.answer("Товар уже удалён", show_alert=True)
         return
     category_id = product.category_id
-
-    # Проданные позиции связаны с order_items внешним ключом RESTRICT, поэтому
-    # физическое удаление товара с историей продаж не пройдёт. Это не ошибка,
-    # а защита истории: такой товар выключают, а не удаляют.
-    counts = await stock_repo.counts_by_status(session, product_id)
-    if counts["sold"]:
-        product.is_active = False
-        await call.answer("Есть продажи — товар выключен, а не удалён", show_alert=True)
-        await audit_repo.record(session, actor.user_id, "product.disable_instead_delete", "product", product_id)
-        call.data = f"a:prod:{product_id}"
-        await product_card(call, session, actor)
-        return
 
     await catalog_repo.delete_product(session, product_id)
     await audit_repo.record(session, actor.user_id, "product.delete", "product", product_id)

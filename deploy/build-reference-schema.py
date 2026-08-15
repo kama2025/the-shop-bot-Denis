@@ -37,9 +37,27 @@ def main() -> int:
 
     engine = create_engine(url)
     with engine.begin() as conn:
+        # Чистим базу ЦЕЛИКОМ, а не по списку из моделей.
+        #
+        # Раньше здесь удалялись таблицы из `Base.metadata` — то есть те, что
+        # в моделях есть сейчас. Таблица, УБРАННАЯ из моделей, в этот список не
+        # попадает и остаётся от прошлого прогона. Эталон тогда содержит то,
+        # чего в моделях уже нет, и сверка показывает расхождение, которого
+        # в реальности нет. База отведена под эту проверку целиком, поэтому
+        # спрашивать её саму, что в ней лежит, — единственный надёжный способ.
         conn.execute(text("SET FOREIGN_KEY_CHECKS = 0"))
-        for table in reversed(Base.metadata.sorted_tables):
-            conn.execute(text(f"DROP TABLE IF EXISTS `{table.name}`"))
+        existing = [
+            row[0]
+            for row in conn.execute(
+                text(
+                    "SELECT table_name FROM information_schema.tables "
+                    "WHERE table_schema = :db"
+                ),
+                {"db": CHECK_DB},
+            )
+        ]
+        for name in existing:
+            conn.execute(text(f"DROP TABLE IF EXISTS `{name}`"))
         conn.execute(text("SET FOREIGN_KEY_CHECKS = 1"))
 
     Base.metadata.create_all(engine)

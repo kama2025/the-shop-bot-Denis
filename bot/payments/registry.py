@@ -12,6 +12,7 @@ import logging
 from bot.config import Settings
 from bot.payments.base import PaymentMethod, PaymentProvider
 from bot.payments.cryptobot import CryptoBotProvider
+from bot.payments.kassa import KassaProvider
 from bot.payments.platega import PlategaProvider
 
 log = logging.getLogger(__name__)
@@ -43,6 +44,22 @@ class PaymentRegistry:
         else:
             log.info("Platega выключена")
 
+        # kassa.ai подключается сюда же, когда придёт документация. Проверка
+        # настроек при старте сейчас не даёт включить его с пустой реализацией,
+        # так что эта ветка недостижима — и остаётся ровно для того, чтобы
+        # заполнение kassa.py не требовало трогать реестр.
+        if settings.kassa_enabled and settings.kassa_merchant_id and settings.kassa_secret:
+            self._providers["kassa"] = KassaProvider(
+                base_url=settings.kassa_base_url,
+                merchant_id=settings.kassa_merchant_id,
+                secret=settings.kassa_secret,
+                return_url=settings.kassa_return_url,
+                failed_url=settings.kassa_failed_url,
+            )
+            log.info("kassa.ai включена")
+        else:
+            log.info("kassa.ai выключена")
+
         if settings.cryptobot_enabled and settings.cryptobot_token:
             self._providers["cryptobot"] = CryptoBotProvider(
                 base_url=settings.cryptobot_base_url,
@@ -58,6 +75,10 @@ class PaymentRegistry:
     def platega(self) -> PlategaProvider | None:
         provider = self._providers.get("platega")
         return provider if isinstance(provider, PlategaProvider) else None
+
+    def kassa(self) -> KassaProvider | None:
+        provider = self._providers.get("kassa")
+        return provider if isinstance(provider, KassaProvider) else None
 
     def cryptobot(self) -> CryptoBotProvider | None:
         provider = self._providers.get("cryptobot")

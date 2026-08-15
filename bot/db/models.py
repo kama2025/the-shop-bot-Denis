@@ -35,25 +35,44 @@ from bot.db.base import TABLE_ARGS, Base, utcnow
 
 
 class OrderStatus:
-    NEW = "new"              # создан, способ оплаты ещё не выбран
-    PENDING = "pending"      # выставлен счёт, ждём оплату
-    PAID = "paid"            # оплата подтверждена, товар ещё не отдан
-    DELIVERED = "delivered"  # товар выдан
-    AWAITING = "awaiting"    # оплачен, ждёт ручной выдачи администратором
+    NEW = "new"          # создан, способ оплаты ещё не выбран
+    PENDING = "pending"  # выставлен счёт, ждём оплату
+    PAID = "paid"        # оплата подтверждена, реквизиты ещё не запрошены
+
+    # Оплачено, ждём от покупателя логин и пароль от аккаунта.
+    AWAITING_CREDENTIALS = "awaiting_credentials"
+    # Реквизиты получены и отправлены администраторам, работа идёт.
+    IN_WORK = "in_work"
+
+    DELIVERED = "delivered"  # администратор подтвердил выполнение
     CANCELED = "canceled"    # отменён пользователем или админом
-    EXPIRED = "expired"      # истёк резерв
+    EXPIRED = "expired"      # истёк срок на оплату
     REFUNDED = "refunded"    # деньги возвращены
 
     OPEN = (NEW, PENDING)
+    # Оплачено, но не закрыто. Такой заказ нельзя ни отменить по таймауту,
+    # ни считать завершённым — он ждёт человека.
+    ACTIVE = (PAID, AWAITING_CREDENTIALS, IN_WORK)
     FINAL = (DELIVERED, CANCELED, EXPIRED, REFUNDED)
-    ALL = (NEW, PENDING, PAID, AWAITING, DELIVERED, CANCELED, EXPIRED, REFUNDED)
+    ALL = (
+        NEW,
+        PENDING,
+        PAID,
+        AWAITING_CREDENTIALS,
+        IN_WORK,
+        DELIVERED,
+        CANCELED,
+        EXPIRED,
+        REFUNDED,
+    )
 
     TITLES = {
         NEW: "🆕 Создан",
         PENDING: "⏳ Ждёт оплаты",
         PAID: "💰 Оплачен",
-        AWAITING: "🙋 Ждёт выдачи",
-        DELIVERED: "✅ Выдан",
+        AWAITING_CREDENTIALS: "🔑 Ждёт логин и пароль",
+        IN_WORK: "🛠 В работе",
+        DELIVERED: "✅ Выполнен",
         CANCELED: "🚫 Отменён",
         EXPIRED: "⌛ Истёк",
         REFUNDED: "↩️ Возврат",
@@ -72,47 +91,6 @@ class OrderKind:
     TOPUP = "topup"
 
 
-class DeliveryType:
-    """Как товар попадает к покупателю.
-
-    Задаётся при создании товара и определяет всё остальное: нужен ли склад,
-    что заливает администратор и что происходит сразу после оплаты.
-    """
-
-    TEXT = "text"      # позиция склада — текст: ссылка, ключ, логин с паролем
-    FILE = "file"      # позиция склада — файл: архив, документ, картинка
-    MANUAL = "manual"  # склада нет; после оплаты админ связывается с покупателем
-
-    ALL = (TEXT, FILE, MANUAL)
-    NEEDS_STOCK = (TEXT, FILE)
-
-    TITLES = {
-        TEXT: "📝 Текст со склада",
-        FILE: "📎 Файл со склада",
-        MANUAL: "🙋 Выдаёт администратор",
-    }
-
-    HINTS = {
-        TEXT: "Ссылки, ключи, логины с паролями. Заливаются пачкой, выдаются автоматически.",
-        FILE: "Архивы, документы, картинки. Заливаются по одному, выдаются автоматически.",
-        MANUAL: "Склад не нужен. После оплаты админам приходит уведомление с контактом покупателя.",
-    }
-
-
-class StockStatus:
-    AVAILABLE = "available"
-    RESERVED = "reserved"
-    SOLD = "sold"
-    DEFECTIVE = "defective"
-
-    ALL = (AVAILABLE, RESERVED, SOLD, DEFECTIVE)
-
-    TITLES = {
-        AVAILABLE: "🟢 Свободна",
-        RESERVED: "🟡 В резерве",
-        SOLD: "🔵 Продана",
-        DEFECTIVE: "🔴 Брак",
-    }
 
 
 
@@ -221,10 +199,11 @@ class Product(Base):
     )
     title: Mapped[str] = mapped_column(String(255), nullable=False)
     description: Mapped[str | None] = mapped_column(Text)
-    price_kop: Mapped[int] = mapped_column(BigInteger, nullable=False)
-    delivery_type: Mapped[str] = mapped_column(
-        String(16), default=DeliveryType.TEXT, server_default=DeliveryType.TEXT
-    )
+    # Цена в центах. Товар стоит в долларах, а покупатель платит рублями по
+    # курсу ЦБ — рублёвой цены у товара нет и быть не может: она разная в
+    # каждый момент времени. Рубли считаются на показе и замораживаются
+    # в заказе.
+    price_usd_cents: Mapped[int] = mapped_column(BigInteger, nullable=False)
     image_path: Mapped[str | None] = mapped_column(String(512))
     image_file_id: Mapped[str | None] = mapped_column(String(255))
     sort_order: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
@@ -235,57 +214,26 @@ class Product(Base):
     category: Mapped[Category] = relationship(back_populates="products")
 
 
-# --- Склад ------------------------------------------------------------------
+# --- Курс валют -------------------------------------------------------------
 
 
-class StockBatch(Base):
-    """Партия завоза. Нужна, чтобы одной кнопкой забраковать всю пачку."""
+class ExchangeRate(Base):
+    """История курса ЦБ.
 
-    __tablename__ = "stock_batches"
-    __table_args__ = (Index("ix_stock_batches_product_id", "product_id"), TABLE_ARGS)
+    Строки не перезаписываются, а добавляются. Курс, по которому продали
+    вчера, нужен, чтобы через месяц разобрать спор по старому заказу — а
+    единственная перезаписываемая строка эту историю стирает.
+    """
 
-    id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    product_id: Mapped[int] = mapped_column(
-        ForeignKey("products.id", ondelete="CASCADE"), nullable=False
-    )
-    admin_id: Mapped[int | None] = mapped_column(BigInteger)
-    items_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
-    note: Mapped[str | None] = mapped_column(String(255))
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    __tablename__ = "exchange_rates"
+    __table_args__ = (Index("ix_exchange_rates_code_fetched_at", "code", "fetched_at"), TABLE_ARGS)
 
-
-class StockItem(Base):
-    __tablename__ = "stock_items"
-    __table_args__ = (
-        # Главный индекс магазина: по нему идёт и подсчёт остатка, и захват
-        # позиций под заказ.
-        Index("ix_stock_items_product_id_status", "product_id", "status"),
-        Index("ix_stock_items_status_reserved_until", "status", "reserved_until"),
-        Index("ix_stock_items_order_id", "order_id"),
-        TABLE_ARGS,
-    )
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    product_id: Mapped[int] = mapped_column(
-        ForeignKey("products.id", ondelete="CASCADE"), nullable=False
-    )
-    batch_id: Mapped[int | None] = mapped_column(
-        ForeignKey("stock_batches.id", ondelete="SET NULL")
-    )
-    # Для текстовых товаров здесь сама позиция, для файловых — подпись к файлу
-    # (может быть пустой), а сам файл лежит в file_id.
-    content: Mapped[str] = mapped_column(Text, nullable=False)
-    file_id: Mapped[str | None] = mapped_column(String(255))
-    file_kind: Mapped[str | None] = mapped_column(String(16))  # document | photo | video
-    file_name: Mapped[str | None] = mapped_column(String(255))
-    status: Mapped[str] = mapped_column(
-        String(16), default=StockStatus.AVAILABLE, server_default=StockStatus.AVAILABLE
-    )
-    order_id: Mapped[int | None] = mapped_column(BigInteger)
-    reserved_until: Mapped[datetime | None] = mapped_column(DateTime)
-    sold_at: Mapped[datetime | None] = mapped_column(DateTime)
-    defect_reason: Mapped[str | None] = mapped_column(String(255))
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    code: Mapped[str] = mapped_column(String(8), nullable=False)
+    # Копеек за одну единицу валюты. Целое: курс участвует в расчёте денег.
+    rate_kop: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    source: Mapped[str] = mapped_column(String(32), default="cbr", server_default="cbr")
+    fetched_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
 # --- Заказы -----------------------------------------------------------------
@@ -301,6 +249,9 @@ class Order(Base):
         # MySQL допускает несколько NULL в уникальном индексе, поэтому
         # неоплаченные заказы друг другу не мешают.
         UniqueConstraint("provider", "provider_txn_id", name="uq_orders_provider_provider_txn_id"),
+        # Токен показывается покупателю и называется вслух. Двух одинаковых
+        # быть не должно: по нему администратор находит заказ.
+        UniqueConstraint("token", name="uq_orders_token"),
         TABLE_ARGS,
     )
 
@@ -310,16 +261,26 @@ class Order(Base):
         String(16), default=OrderKind.PURCHASE, server_default=OrderKind.PURCHASE
     )
 
+    # Выдаётся в момент подтверждения оплаты. До оплаты токена нет — называть
+    # покупателю номер, за который ещё не заплачено, незачем.
+    token: Mapped[str | None] = mapped_column(String(16))
+
     product_id: Mapped[int | None] = mapped_column(ForeignKey("products.id", ondelete="SET NULL"))
     # Снимок названия на момент покупки: товар могут переименовать или удалить,
     # а в истории покупок и в отчёте должно остаться то, что человек купил.
     product_title: Mapped[str] = mapped_column(String(255), nullable=False)
-    # Снимок типа выдачи. Тип товара могут поменять после продажи, но заказ
-    # обязан завершиться так, как был оформлен, — иначе оплаченный «файл»
-    # внезапно станет ручной выдачей и повиснет.
-    delivery_type: Mapped[str] = mapped_column(
-        String(16), default=DeliveryType.TEXT, server_default=DeliveryType.TEXT
-    )
+
+    # Снимок цены и курса на момент создания заказа. Пересчитывать оплаченный
+    # заказ нельзя: курс меняется, пока покупатель ходит за деньгами, и
+    # доплачивать разницу он не должен. Сверка суммы с провайдером идёт
+    # по этим числам, а не по текущей цене товара.
+    price_usd_cents: Mapped[int] = mapped_column(BigInteger, default=0, server_default="0")
+    rate_kop: Mapped[int] = mapped_column(BigInteger, default=0, server_default="0")
+    markup_pct: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+
+    # Реквизиты аккаунта, присланные покупателем после оплаты.
+    account_login: Mapped[str | None] = mapped_column(String(255))
+    account_password: Mapped[str | None] = mapped_column(String(255))
 
     qty: Mapped[int] = mapped_column(Integer, default=1, server_default="1")
     unit_price_kop: Mapped[int] = mapped_column(BigInteger, nullable=False)
@@ -337,38 +298,22 @@ class Order(Base):
     provider_txn_id: Mapped[str | None] = mapped_column(String(128))
     pay_url: Mapped[str | None] = mapped_column(Text)
 
+    # 32, а не 16: `awaiting_credentials` — двадцать символов. Колонка на 16
+    # обрезала бы статус молча, и заказ переставал бы находиться по нему.
     status: Mapped[str] = mapped_column(
-        String(16), default=OrderStatus.NEW, server_default=OrderStatus.NEW
+        String(32), default=OrderStatus.NEW, server_default=OrderStatus.NEW
     )
 
     reserve_expires_at: Mapped[datetime | None] = mapped_column(DateTime)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     paid_at: Mapped[datetime | None] = mapped_column(DateTime)
+    # Когда покупатель прислал логин и пароль.
+    credentials_at: Mapped[datetime | None] = mapped_column(DateTime)
+    # Когда администратор подтвердил выполнение.
     delivered_at: Mapped[datetime | None] = mapped_column(DateTime)
+    delivered_by: Mapped[int | None] = mapped_column(BigInteger)
     refunded_at: Mapped[datetime | None] = mapped_column(DateTime)
     admin_note: Mapped[str | None] = mapped_column(String(255))
-
-
-class OrderItem(Base):
-    """Какие именно позиции склада ушли в заказ."""
-
-    __tablename__ = "order_items"
-    __table_args__ = (
-        UniqueConstraint("order_id", "stock_item_id", name="uq_order_items_order_id_stock_item_id"),
-        Index("ix_order_items_order_id", "order_id"),
-        TABLE_ARGS,
-    )
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    order_id: Mapped[int] = mapped_column(
-        ForeignKey("orders.id", ondelete="CASCADE"), nullable=False
-    )
-    stock_item_id: Mapped[int] = mapped_column(
-        ForeignKey("stock_items.id", ondelete="RESTRICT"), nullable=False
-    )
-    # Если позицию заменили по гарантии — здесь ссылка на выданную взамен.
-    replaced_by_item_id: Mapped[int | None] = mapped_column(Integer)
-    delivered_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
 class Payment(Base):

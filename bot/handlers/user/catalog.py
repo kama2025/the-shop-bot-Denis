@@ -1,4 +1,4 @@
-"""Каталог: категории, товары, карточка товара, наличие, поиск."""
+"""Каталог: категории, товары, карточка товара, поиск."""
 
 from __future__ import annotations
 
@@ -10,14 +10,16 @@ from aiogram.types import CallbackQuery, Message
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.config import Settings
-from bot.db.models import DeliveryType, User
+from bot.db.models import User
 from bot.keyboards import user as user_kb
 from bot.keyboards.theme import ICON
 from bot.repo import catalog as catalog_repo
 from bot.repo import promo as promo_repo
-from bot.repo import stock as stock_repo
+from bot.services import currency as currency_service
 from bot.services import header as header_service
 from bot.services import orders as orders_service
+from bot.services import pricing
+from bot.services.settings_store import settings_store
 from bot.states.user import UserSG
 from bot.services.texts import text_service
 from bot.utils.money import format_kop
@@ -86,11 +88,11 @@ async def open_category(call: CallbackQuery, session: AsyncSession, **_: object)
         return
 
     chunk = paginate(products, page, PER_PAGE)
-    stock = await catalog_repo.stock_counts(session, [p.id for p in chunk.items])
+    rate_kop = await currency_service.current_usd_kop(session) or 0
     await show(
         call,
         header,
-        user_kb.products(chunk.items, stock, category_id, chunk.page, chunk.pages),
+        user_kb.products(chunk.items, rate_kop, category_id, chunk.page, chunk.pages),
         await header_service.photo(session),
     )
 
@@ -105,57 +107,45 @@ async def open_product(
     **_: object,
 ) -> None:
     await call.answer()
-    _, _, product_id_raw, qty_raw = call.data.split(":", 3)
-    product_id, qty = int(product_id_raw), int(qty_raw)
+    product_id = int(call.data.split(":")[2])
 
     product = await catalog_repo.get_product(session, product_id)
     if product is None or not product.is_active:
         await call.answer("Товар недоступен", show_alert=True)
         return
 
-    is_manual = product.delivery_type == DeliveryType.MANUAL
-    in_stock = await stock_repo.available_count(session, product.id)
-    if in_stock == 0:
-        await show(
-            call,
-            await text_service.get(session, "product_out_of_stock"),
-            user_kb.simple_back(f"u:cat:{product.category_id}:0"),
-            await _photo(session, product),
-        )
+    rate_kop = await currency_service.current_usd_kop(session)
+    photo = await _photo(session, product)
+    back = f"u:cat:{product.category_id}:0"
+
+    if not rate_kop:
+        # Курса нет вообще. Показываем карточку без цены и без кнопки покупки:
+        # кнопка, после которой приходит отказ, читается как поломка.
+        text = await text_service.get(session, "rate_unavailable")
+        await show(call, text, user_kb.simple_back(back), photo)
         return
 
-    qty = max(1, min(qty, settings.max_qty_per_order, in_stock))
-
+    markup_pct = await settings_store.get_int(session, "price_markup_pct", 10)
     promo = await _active_promo(session, state, user.tg_id, product)
-    calc = orders_service.quote(product, qty, promo)
+    calc = orders_service.quote(product, rate_kop, markup_pct, promo)
 
     text = await text_service.get(
         session,
         "product_card",
         title=html.escape(product.title),
         description=html.escape(product.description or ""),
-        price=format_kop(product.price_kop),
-        stock="по запросу" if is_manual else in_stock,
-        qty=qty,
+        price_usd=pricing.format_usd(product.price_usd_cents),
+        price_rub=format_kop(calc.base_kop),
         total=format_kop(calc.total_kop),
     )
-    if is_manual:
-        text += "\n🙋 Этот товар выдаёт администратор — он свяжется с вами сразу после оплаты."
     if promo is not None:
         text += f"\n{ICON['promo']} Промокод <b>{html.escape(promo.code)}</b> применён"
 
     await show(
         call,
         text,
-        user_kb.product_card(
-            product,
-            qty,
-            calc.total_kop,
-            in_stock,
-            settings.max_qty_per_order,
-            back_data=f"u:cat:{product.category_id}:0",
-        ),
-        await _photo(session, product),
+        user_kb.product_card(product, calc.total_kop, back_data=back),
+        photo,
     )
 
 
@@ -173,41 +163,6 @@ async def _active_promo(session: AsyncSession, state: FSMContext, user_id: int, 
 
     check = await promo_service.validate(session, code, user_id, product=product)
     return check.promo if check.ok else None
-
-
-@router.callback_query(F.data == "u:avail")
-async def availability(call: CallbackQuery, session: AsyncSession, **_: object) -> None:
-    await call.answer()
-    categories = await catalog_repo.list_categories(session, only_active=True)
-    lines = [await text_service.get(session, "availability_title"), ""]
-
-    total = 0
-    for category in categories:
-        products = await catalog_repo.list_products(session, category.id, only_active=True)
-        if not products:
-            continue
-        counts = await catalog_repo.stock_counts(session, [p.id for p in products])
-        lines.append(f"<b>{html.escape(category.title)}</b>")
-        for product in products:
-            left = counts.get(product.id, 0)
-            if product.delivery_type == DeliveryType.MANUAL:
-                lines.append(
-                    f"🙋 {html.escape(product.title)} — по запросу · "
-                    f"{format_kop(product.price_kop)}"
-                )
-                total += 1
-                continue
-            total += left
-            mark = "🟢" if left > 3 else ("🟡" if left else "🔴")
-            lines.append(
-                f"{mark} {html.escape(product.title)} — {left} шт. · {format_kop(product.price_kop)}"
-            )
-        lines.append("")
-
-    if total == 0 and len(lines) <= 2:
-        lines.append(await text_service.get(session, "catalog_empty"))
-
-    await show(call, "\n".join(lines).strip(), user_kb.simple_back())
 
 
 @router.callback_query(F.data == "u:search")
@@ -237,8 +192,8 @@ async def do_search(
         )
         return
 
-    counts = await catalog_repo.stock_counts(session, [p.id for p in products])
+    rate_kop = await currency_service.current_usd_kop(session) or 0
     await message.answer(
         f"{ICON['search']} Найдено: {len(products)}",
-        reply_markup=user_kb.products(products, counts, products[0].category_id, 0, 1),
+        reply_markup=user_kb.products(products, rate_kop, products[0].category_id, 0, 1),
     )

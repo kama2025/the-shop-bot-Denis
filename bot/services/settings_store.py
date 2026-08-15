@@ -50,6 +50,12 @@ DEFAULT_SETTINGS: dict[str, dict] = {
         "value": "1",
         "type": "bool",
     },
+    "price_markup_pct": {
+        "title": "Сервисный сбор к цене, %",
+        "hint": "Прибавляется к цене по курсу ЦБ. В каталоге показывается чистый курс",
+        "value": "10",
+        "type": "int",
+    },
     "guarantee_hours": {
         "title": "Срок гарантии, часов",
         "value": "2",
@@ -67,17 +73,6 @@ DEFAULT_SETTINGS: dict[str, dict] = {
     },
     "topup_enabled": {
         "title": "Пополнение баланса",
-        "value": "1",
-        "type": "bool",
-    },
-    "low_stock_threshold": {
-        "title": "Порог «мало на складе», шт.",
-        "hint": "Ниже порога админам приходит предупреждение после продажи",
-        "value": "3",
-        "type": "int",
-    },
-    "restock_announce": {
-        "title": "Сообщать админам о завозе",
         "value": "1",
         "type": "bool",
     },

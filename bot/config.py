@@ -62,6 +62,16 @@ class Settings(BaseSettings):
     platega_return_url: str = Field(default="https://t.me", alias="PLATEGA_RETURN_URL")
     platega_failed_url: str = Field(default="https://t.me", alias="PLATEGA_FAILED_URL")
 
+    # --- kassa.ai ----------------------------------------------------------
+    # Провайдер, на который магазин переходит с Platega. Пока у сервиса нет
+    # публичной документации API, интеграция не заполнена — см. bot/payments/kassa.py.
+    kassa_enabled: bool = Field(default=False, alias="KASSA_ENABLED")
+    kassa_base_url: str = Field(default="https://kassa.ai", alias="KASSA_BASE_URL")
+    kassa_merchant_id: str = Field(default="", alias="KASSA_MERCHANT_ID")
+    kassa_secret: str = Field(default="", alias="KASSA_SECRET")
+    kassa_return_url: str = Field(default="https://t.me", alias="KASSA_RETURN_URL")
+    kassa_failed_url: str = Field(default="https://t.me", alias="KASSA_FAILED_URL")
+
     # --- CryptoBot ---------------------------------------------------------
     cryptobot_enabled: bool = Field(default=False, alias="CRYPTOBOT_ENABLED")
     cryptobot_base_url: str = Field(default="https://pay.crypt.bot/api", alias="CRYPTOBOT_BASE_URL")
@@ -139,6 +149,9 @@ class Settings(BaseSettings):
     def cryptobot_callback_url(self) -> str:
         return f"{self.webhook_public_url}/pay/{self.webhook_secret_path}/cryptobot"
 
+    def kassa_callback_url(self) -> str:
+        return f"{self.webhook_public_url}/pay/{self.webhook_secret_path}/kassa"
+
     def validate_runtime(self) -> list[str]:
         """Проверяет настройки перед стартом.
 
@@ -162,6 +175,18 @@ class Settings(BaseSettings):
                 problems.append("PLATEGA_ENABLED=true, но PLATEGA_SECRET не задан")
             if not self.platega_methods:
                 problems.append("PLATEGA_ENABLED=true, но PLATEGA_METHODS пуст")
+
+        if self.kassa_enabled:
+            # Отказ намеренно жёсткий и без обходного пути. Включённый провайдер,
+            # у которого не заполнены методы, — это магазин, где кнопка оплаты
+            # есть, а оплаты нет. Пусть лучше бот не стартует у нас, чем
+            # сломается у первого покупателя.
+            problems.append(
+                "KASSA_ENABLED=true, но интеграция kassa.ai не реализована: "
+                "у сервиса нет публичной документации API. Запросите её у "
+                "заказчика и заполните bot/payments/kassa.py, а пока держите "
+                "KASSA_ENABLED=false"
+            )
 
         if self.cryptobot_enabled and (
             not self.cryptobot_token or "PLACEHOLDER" in self.cryptobot_token

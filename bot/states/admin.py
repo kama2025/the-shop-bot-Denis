@@ -31,10 +31,23 @@ class StockSG(StatesGroup):
 
 class OrderSG(StatesGroup):
     search = State()
-    manual_payload = State()
     refund_comment = State()
-    replace_reason = State()
     block_reason = State()
+
+
+class ProductWizardSG(StatesGroup):
+    """Выкладка товара: шаги идут подряд, товар создаётся только в конце.
+
+    Обрыв на любом шаге не оставляет следов — наполовину созданный товар
+    в каталоге хуже, чем его отсутствие.
+    """
+
+    category = State()
+    title = State()
+    image = State()
+    price = State()
+    description = State()
+    confirm = State()
 
 
 class PromoSG(StatesGroup):

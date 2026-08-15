@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
-from bot.db.models import Category, Channel, DeliveryType, Order, OrderStatus, Product
+from bot.db.models import Category, Channel, Order, OrderStatus, Product
 from bot.keyboards.theme import (
     DANGER,
     ICON,
@@ -17,6 +17,7 @@ from bot.keyboards.theme import (
     rows,
 )
 from bot.payments.base import PaymentMethod
+from bot.services.pricing import base_kop, format_usd
 from bot.utils.money import format_kop
 
 
@@ -35,10 +36,9 @@ def main_menu(is_admin: bool = False) -> InlineKeyboardMarkup:
     keyboard = [
         [
             btn(f"{ICON['catalog']} Каталог", callback_data="u:cats:0", style=PRIMARY),
-            btn(f"{ICON['stock']} Наличие", callback_data="u:avail", style=PRIMARY),
+            btn(f"{ICON['search']} Поиск", callback_data="u:search", style=PRIMARY),
         ],
         [
-            btn(f"{ICON['search']} Поиск", callback_data="u:search", style=PRIMARY),
             btn(f"{ICON['profile']} Профиль", callback_data="u:profile", style=PRIMARY),
         ],
         [btn(f"{ICON['info']} Информация", callback_data="u:info", style=PRIMARY)],
@@ -64,25 +64,28 @@ def categories(items: list[Category], page: int, pages: int) -> InlineKeyboardMa
 
 def products(
     items: list[Product],
-    stock: dict[int, int],
+    rate_kop: int,
     category_id: int,
     page: int,
     pages: int,
 ) -> InlineKeyboardMarkup:
+    """Список товаров категории.
+
+    Цена показывается в долларах, рубли считаются по текущему курсу прямо
+    здесь. Если курса нет, рублёвая часть просто не выводится — врать числом
+    хуже, чем не показать его.
+    """
     keyboard: list[list[InlineKeyboardButton]] = []
     for product in items:
-        left = stock.get(product.id, 0)
-        if product.delivery_type == DeliveryType.MANUAL:
-            mark = ""
-            left = 1  # «есть», без числа: склада у такого товара нет
-        else:
-            mark = "" if left else " (нет)"
+        price = format_usd(product.price_usd_cents)
+        if rate_kop > 0:
+            price += f" ({format_kop(base_kop(product.price_usd_cents, rate_kop))})"
         keyboard.append(
             [
                 btn(
-                    f"{product.title} — {format_kop(product.price_kop)}{mark}",
-                    callback_data=f"u:prod:{product.id}:1",
-                    style=SUCCESS if left else SECONDARY,
+                    f"{product.title} — {price}",
+                    callback_data=f"u:prod:{product.id}",
+                    style=SUCCESS,
                 )
             ]
         )
@@ -95,35 +98,22 @@ def products(
 
 def product_card(
     product: Product,
-    qty: int,
-    total_kop: int,
-    in_stock: int,
-    max_qty: int,
+    total_kop: int | None,
     back_data: str,
 ) -> InlineKeyboardMarkup:
-    keyboard: list[list[InlineKeyboardButton]] = []
+    """Карточка товара.
 
-    if in_stock > 0:
-        limit = min(max_qty, in_stock)
+    Количества нет: один заказ — один аккаунт. `total_kop` равен None, когда
+    курс недоступен, — тогда кнопки покупки нет вовсе. Кнопка, после которой
+    приходит отказ, читается как поломка.
+    """
+    keyboard: list[list[InlineKeyboardButton]] = []
+    if total_kop is not None:
         keyboard.append(
             [
                 btn(
-                    ICON["minus"] if qty > 1 else "⛔",
-                    callback_data=f"u:prod:{product.id}:{max(1, qty - 1)}",
-                    style=DANGER,
-                ),
-                btn(
-                    ICON["plus"] if qty < limit else "⛔",
-                    callback_data=f"u:prod:{product.id}:{min(limit, qty + 1)}",
-                    style=SUCCESS,
-                ),
-            ]
-        )
-        keyboard.append(
-            [
-                btn(
-                    f"{ICON['buy']} Купить • {qty} шт • {format_kop(total_kop)}",
-                    callback_data=f"u:buy:{product.id}:{qty}",
+                    f"{ICON['buy']} Купить • {format_kop(total_kop)}",
+                    callback_data=f"u:buy:{product.id}",
                     style=SUCCESS,
                 )
             ]
@@ -193,6 +183,18 @@ def profile(has_promo: bool, topup_enabled: bool) -> InlineKeyboardMarkup:
     keyboard.append([btn("📜 История баланса", callback_data="u:balance:0", style=SECONDARY)])
     keyboard.append(nav_row(back_data=None))
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
+
+
+def send_credentials(order_id: int) -> InlineKeyboardMarkup:
+    """Кнопка возврата к вводу реквизитов.
+
+    Покупатель мог уйти из состояния — нажать «Назад», перезапустить бота,
+    просто закрыть чат. Без этой кнопки оплаченный заказ становится тупиком.
+    """
+    return rows(
+        [btn(f"{ICON['profile']} Отправить логин и пароль", callback_data=f"u:creds:{order_id}", style=SUCCESS)],
+        nav_row(back_data="u:profile"),
+    )
 
 
 def purchases(items: list[Order], page: int, pages: int) -> InlineKeyboardMarkup:

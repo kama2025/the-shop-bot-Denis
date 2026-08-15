@@ -76,21 +76,50 @@ async def fetch_cbr(client, char_code: str = "USD") -> int:
     except Exception as exc:
         raise RateError(f"ЦБ ответил ошибкой: {exc}") from exc
 
-    raw = getattr(response, "content", _MISSING)
-    if not isinstance(raw, (bytes, bytearray)):
-        raise RateError("ответ ЦБ пришёл без тела в байтах")
+    raw = await _body_bytes(response)
+    return parse_cbr_xml(_decode(raw, _header_encoding(response)), char_code)
 
-    return parse_cbr_xml(_decode(bytes(raw), _header_encoding(response)), char_code)
+
+async def _body_bytes(response) -> bytes:
+    """Тело ответа в байтах, каким бы клиентом его ни принесли.
+
+    У httpx `content` — уже готовые байты. У aiohttp (а он в проекте
+    единственный) `content` — это поток StreamReader, а байты отдаёт корутина
+    `read()`; без этой ветки модуль с aiohttp не работал бы вовсе.
+    """
+    raw = getattr(response, "content", None)
+    if isinstance(raw, (bytes, bytearray)):
+        return bytes(raw)
+
+    read = getattr(response, "read", None)
+    if callable(read):
+        try:
+            raw = read()
+            if inspect.isawaitable(raw):
+                raw = await raw
+        except Exception as exc:  # клиент чужой, тип его исключений нам не подконтролен
+            raise RateError(f"тело ответа ЦБ не читается: {exc}") from exc
+        if isinstance(raw, (bytes, bytearray)):
+            return bytes(raw)
+
+    raise RateError("ответ ЦБ пришёл без тела в байтах")
 
 
 def _header_encoding(response) -> str | None:
     """Кодировка из заголовка ответа, если сервер её назвал."""
-    # httpx: charset_encoding — это ровно charset из Content-Type, без выдумок,
-    # тогда как encoding подставляет utf-8, когда сервер промолчал.
-    encoding = getattr(response, "charset_encoding", _MISSING)
-    if encoding is _MISSING:
-        encoding = getattr(response, "encoding", None)
-    return encoding if isinstance(encoding, str) and encoding.strip() else None
+    # charset_encoding (httpx) и charset (aiohttp) — это ровно charset из
+    # Content-Type и None, когда сервер промолчал. Важно само наличие такого
+    # атрибута: раз он есть, к encoding не идём, потому что httpx подставляет
+    # туда utf-8 за молчащий сервер, и мы приняли бы выдумку за объявление.
+    for attribute in ("charset_encoding", "charset"):
+        encoding = getattr(response, attribute, _MISSING)
+        if encoding is not _MISSING:
+            return _clean_encoding(encoding)
+    return _clean_encoding(getattr(response, "encoding", None))
+
+
+def _clean_encoding(encoding: object) -> str | None:
+    return encoding.strip() if isinstance(encoding, str) and encoding.strip() else None
 
 
 def _decode(raw: bytes, header_encoding: str | None) -> str:

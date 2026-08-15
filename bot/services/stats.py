@@ -13,7 +13,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.db.base import utcnow
-from bot.db.models import Order, OrderKind, OrderStatus, Product, StockItem, StockStatus, User
+from bot.db.models import Order, OrderKind, OrderStatus, User
 
 PAID_STATUSES = (OrderStatus.PAID, OrderStatus.DELIVERED)
 
@@ -35,9 +35,8 @@ class Snapshot:
     refunded_kop: int = 0
     average_check_kop: int = 0
 
-    stock_available: int = 0
-    stock_sold: int = 0
-    stock_defective: int = 0
+    orders_awaiting_credentials: int = 0
+    orders_in_work: int = 0
 
     top_products: list[tuple[str, int, int]] = field(default_factory=list)
 
@@ -139,15 +138,24 @@ async def collect(session: AsyncSession) -> Snapshot:
     if snapshot.orders_paid:
         snapshot.average_check_kop = snapshot.revenue_kop // snapshot.orders_paid
 
-    stock_rows = (
+    # Сколько заказов ждёт человека. Это единственные два числа, по которым
+    # видно, что работа накапливается: выручка растёт и когда её никто не делает.
+    open_rows = (
         await session.execute(
-            select(StockItem.status, func.count(StockItem.id)).group_by(StockItem.status)
+            select(Order.status, func.count(Order.id))
+            .where(
+                Order.status.in_(
+                    [OrderStatus.AWAITING_CREDENTIALS, OrderStatus.IN_WORK]
+                )
+            )
+            .group_by(Order.status)
         )
     ).all()
-    stock_counts = {status: int(count) for status, count in stock_rows}
-    snapshot.stock_available = stock_counts.get(StockStatus.AVAILABLE, 0)
-    snapshot.stock_sold = stock_counts.get(StockStatus.SOLD, 0)
-    snapshot.stock_defective = stock_counts.get(StockStatus.DEFECTIVE, 0)
+    open_counts = {status: int(count) for status, count in open_rows}
+    snapshot.orders_awaiting_credentials = open_counts.get(
+        OrderStatus.AWAITING_CREDENTIALS, 0
+    )
+    snapshot.orders_in_work = open_counts.get(OrderStatus.IN_WORK, 0)
 
     top_rows = (
         await session.execute(
@@ -165,28 +173,6 @@ async def collect(session: AsyncSession) -> Snapshot:
     snapshot.top_products = [(str(a), int(b or 0), int(c or 0)) for a, b, c in top_rows]
 
     return snapshot
-
-
-async def low_stock(session: AsyncSession, threshold: int) -> list[tuple[Product, int]]:
-    """Товары, у которых остаток ниже порога."""
-    counts = (
-        select(
-            StockItem.product_id.label("pid"),
-            func.count(StockItem.id).label("free"),
-        )
-        .where(StockItem.status == StockStatus.AVAILABLE)
-        .group_by(StockItem.product_id)
-        .subquery()
-    )
-    rows = (
-        await session.execute(
-            select(Product, func.coalesce(counts.c.free, 0))
-            .outerjoin(counts, counts.c.pid == Product.id)
-            .where(Product.is_active.is_(True), func.coalesce(counts.c.free, 0) <= threshold)
-            .order_by(func.coalesce(counts.c.free, 0))
-        )
-    ).all()
-    return [(product, int(free)) for product, free in rows]
 
 
 def format_snapshot(snapshot: Snapshot) -> str:
@@ -212,10 +198,9 @@ def format_snapshot(snapshot: Snapshot) -> str:
         f"• Средний чек: {format_kop(snapshot.average_check_kop)}",
         f"• Возвращено: {format_kop(snapshot.refunded_kop)}",
         "",
-        "<b>Склад</b>",
-        f"• Свободно: {snapshot.stock_available}",
-        f"• Продано: {snapshot.stock_sold}",
-        f"• Брак: {snapshot.stock_defective}",
+        "<b>В работе</b>",
+        f"• Ждут логин и пароль: {snapshot.orders_awaiting_credentials}",
+        f"• В работе: {snapshot.orders_in_work}",
     ]
     if snapshot.top_products:
         lines += ["", "<b>Популярные товары</b>"]

@@ -5,7 +5,19 @@ from __future__ import annotations
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.db.base import utcnow
-from bot.db.models import BalanceTxn, BalanceTxnKind, Category, Product, StockItem, User
+from bot.db.models import (
+    BalanceTxn,
+    BalanceTxnKind,
+    Category,
+    ExchangeRate,
+    Order,
+    OrderStatus,
+    Product,
+    User,
+)
+
+DEFAULT_RATE_KOP = 9000
+"""90,00 ₽ за доллар — круглое число, на котором расчёты читаются глазами."""
 
 
 async def make_user(session: AsyncSession, tg_id: int = 1001, balance_kop: int = 0) -> User:
@@ -51,23 +63,58 @@ async def make_product(
     session: AsyncSession,
     category: Category | None = None,
     title: str = "Товар",
-    price_kop: int = 9000,
+    price_usd_cents: int = 2000,
 ) -> Product:
     if category is None:
         category = await make_category(session)
     product = Product(
-        category_id=category.id, title=title, price_kop=price_kop, sort_order=10
+        category_id=category.id,
+        title=title,
+        price_usd_cents=price_usd_cents,
+        sort_order=10,
     )
     session.add(product)
     await session.flush()
     return product
 
 
-async def fill_stock(session: AsyncSession, product: Product, count: int) -> list[StockItem]:
-    items = [
-        StockItem(product_id=product.id, content=f"позиция-{product.id}-{index}")
-        for index in range(count)
-    ]
-    session.add_all(items)
+async def make_rate(
+    session: AsyncSession, rate_kop: int = DEFAULT_RATE_KOP, code: str = "USD"
+) -> ExchangeRate:
+    row = ExchangeRate(code=code, rate_kop=rate_kop, source="test", fetched_at=utcnow())
+    session.add(row)
     await session.flush()
-    return items
+    return row
+
+
+async def make_paid_order(
+    session: AsyncSession,
+    user: User,
+    product: Product,
+    total_kop: int = 198000,
+    status: str = OrderStatus.PAID,
+) -> Order:
+    """Заказ, за который уже заплатили.
+
+    Нужен там, где проверяется не покупка, а то, что происходит после неё.
+    Снимки цены заполнены — иначе тест проверяет заказ, который в бою
+    возникнуть не может.
+    """
+    order = Order(
+        user_id=user.tg_id,
+        product_id=product.id,
+        product_title=product.title,
+        price_usd_cents=product.price_usd_cents,
+        rate_kop=DEFAULT_RATE_KOP,
+        markup_pct=10,
+        qty=1,
+        unit_price_kop=total_kop,
+        subtotal_kop=total_kop,
+        discount_kop=0,
+        total_kop=total_kop,
+        status=status,
+        paid_at=utcnow(),
+    )
+    session.add(order)
+    await session.flush()
+    return order

@@ -5,7 +5,8 @@ from __future__ import annotations
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from bot.db.models import Category, DeliveryType, Product, StockItem, StockStatus
+from bot.db.models import Category, Product
+from bot.services import search as search_service
 
 
 # --- Категории --------------------------------------------------------------
@@ -109,10 +110,9 @@ async def create_product(
     category_id: int,
     title: str,
     description: str | None,
-    price_kop: int,
+    price_usd_cents: int,
     image_path: str | None = None,
     image_file_id: str | None = None,
-    delivery_type: str = DeliveryType.TEXT,
 ) -> Product:
     next_order = (
         await session.execute(
@@ -125,10 +125,9 @@ async def create_product(
         category_id=category_id,
         title=title,
         description=description,
-        price_kop=price_kop,
+        price_usd_cents=price_usd_cents,
         image_path=image_path,
         image_file_id=image_file_id,
-        delivery_type=delivery_type,
         sort_order=int(next_order) + 10,
     )
     session.add(product)
@@ -161,44 +160,29 @@ async def swap_product_order(session: AsyncSession, product_id: int, direction: 
 async def search_products(
     session: AsyncSession, query: str, limit: int = 30, only_active: bool = True
 ) -> list[Product]:
-    pattern = f"%{query.strip()}%"
-    stmt = select(Product).where(Product.title.ilike(pattern))
+    """Поиск по названию с допуском на опечатку.
+
+    Похожесть считается в Python, а не в SQL: каталог здесь — десятки записей,
+    и вытащить пары «id, название» дешевле, чем заводить полнотекстовый индекс,
+    который всё равно плохо прощает опечатки.
+    """
+    query = query.strip()
+    if not query:
+        return []
+
+    stmt = select(Product.id, Product.title)
     if only_active:
         stmt = stmt.where(Product.is_active.is_(True))
-    stmt = stmt.order_by(Product.sort_order, Product.id).limit(limit)
-    return list((await session.execute(stmt)).scalars().all())
+    stmt = stmt.order_by(Product.sort_order, Product.id)
+    rows = [(int(pid), title) for pid, title in (await session.execute(stmt)).all()]
 
+    ranked_ids = search_service.rank(query, rows, limit=limit)
+    if not ranked_ids:
+        return []
 
-MANUAL_STOCK = 10**6
-"""Условный остаток товара с ручной выдачей.
-
-Склада у него нет, но и «нет в наличии» показывать нельзя — его как раз можно
-купить всегда. Число намеренно большое: оно не должно случайно упереться
-в лимит количества в заказе.
-"""
-
-
-async def stock_counts(session: AsyncSession, product_ids: list[int]) -> dict[int, int]:
-    """Остаток свободных позиций по каждому товару, одним запросом."""
-    if not product_ids:
-        return {}
-    stmt = (
-        select(StockItem.product_id, func.count(StockItem.id))
-        .where(
-            StockItem.product_id.in_(product_ids),
-            StockItem.status == StockStatus.AVAILABLE,
-        )
-        .group_by(StockItem.product_id)
-    )
-    rows = (await session.execute(stmt)).all()
-    counts = {product_id: 0 for product_id in product_ids}
-    counts.update({int(pid): int(count) for pid, count in rows})
-
-    manual = await session.execute(
-        select(Product.id).where(
-            Product.id.in_(product_ids), Product.delivery_type == DeliveryType.MANUAL
-        )
-    )
-    for product_id in manual.scalars():
-        counts[int(product_id)] = MANUAL_STOCK
-    return counts
+    found = (
+        await session.execute(select(Product).where(Product.id.in_(ranked_ids)))
+    ).scalars().all()
+    by_id = {product.id: product for product in found}
+    # Порядок задаёт ранжирование, а не база: SQL вернёт строки как ему удобно.
+    return [by_id[pid] for pid in ranked_ids if pid in by_id]

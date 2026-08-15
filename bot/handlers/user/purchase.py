@@ -1,4 +1,10 @@
-"""Покупка: создание заказа, выбор оплаты, проверка, выдача."""
+"""Покупка: заказ, оплата, реквизиты аккаунта.
+
+После подтверждения оплаты бот просит логин и пароль. Просьба отправляется
+**только когда оплата принята именно этим вызовом** — иначе повторное нажатие
+«Проверить оплату» переспрашивало бы реквизиты у покупателя, который их уже
+прислал.
+"""
 
 from __future__ import annotations
 
@@ -7,32 +13,38 @@ import logging
 
 from aiogram import Bot, F, Router
 from aiogram.fsm.context import FSMContext
-from aiogram.types import CallbackQuery
+from aiogram.types import CallbackQuery, Message
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.config import Settings
 from bot.db.models import OrderStatus, User
+from bot.keyboards import admin as admin_kb
 from bot.keyboards import user as user_kb
 from bot.payments.base import ProviderError
 from bot.payments.registry import PaymentRegistry
 from bot.repo import catalog as catalog_repo
 from bot.repo import orders as orders_repo
 from bot.repo import users as users_repo
+from bot.services import currency as currency_service
 from bot.services import delivery as delivery_service
+from bot.services import fulfillment as fulfillment_service
 from bot.services import header as header_service
 from bot.services import notify as notify_service
 from bot.services import orders as orders_service
 from bot.services import payments as payments_service
-from bot.services import dispatch as dispatch_service
 from bot.services import promo as promo_service
 from bot.services.settings_store import settings_store
 from bot.services.texts import text_service
+from bot.states.user import UserSG
 from bot.utils.money import format_kop
 from bot.utils.render import show
 
 log = logging.getLogger(__name__)
 
 router = Router(name="user.purchase")
+
+
+# --- создание заказа --------------------------------------------------------
 
 
 @router.callback_query(F.data.startswith("u:buy:"))
@@ -45,21 +57,36 @@ async def create_order(
     state: FSMContext,
     **_: object,
 ) -> None:
-    _, _, product_id_raw, qty_raw = call.data.split(":", 3)
-    product_id, qty = int(product_id_raw), int(qty_raw)
+    product_id = int(call.data.split(":")[2])
 
     product = await catalog_repo.get_product(session, product_id)
     if product is None or not product.is_active:
         await call.answer("Товар недоступен", show_alert=True)
         return
 
+    rate_kop = await currency_service.current_usd_kop(session)
+    if not rate_kop:
+        await call.answer()
+        await show(
+            call,
+            await text_service.get(session, "rate_unavailable"),
+            user_kb.simple_back(f"u:cat:{product.category_id}:0"),
+        )
+        return
+
+    markup_pct = await settings_store.get_int(session, "price_markup_pct", 10)
+
     data = await state.get_data()
     promo = None
     promo_code = data.get("promo_code")
     if promo_code:
-        subtotal = product.price_kop * qty
+        preview = orders_service.quote(product, rate_kop, markup_pct)
         check = await promo_service.validate(
-            session, promo_code, user.tg_id, product=product, subtotal_kop=subtotal
+            session,
+            promo_code,
+            user.tg_id,
+            product=product,
+            subtotal_kop=preview.unit_price_kop,
         )
         promo = check.promo if check.ok else None
 
@@ -68,19 +95,11 @@ async def create_order(
             session,
             user_id=user.tg_id,
             product=product,
-            qty=qty,
             promo=promo,
+            rate_kop=rate_kop,
+            markup_pct=markup_pct,
             reserve_minutes=settings.order_reserve_minutes,
-            max_qty=settings.max_qty_per_order,
         )
-    except orders_service.OutOfStock as exc:
-        await call.answer()
-        await show(
-            call,
-            await text_service.get(session, "stock_shortage", available=exc.available),
-            user_kb.simple_back(f"u:cat:{product.category_id}:0"),
-        )
-        return
     except orders_service.OrderError as exc:
         await call.answer(str(exc), show_alert=True)
         return
@@ -110,7 +129,6 @@ async def _show_payment_choice(
         "order_summary",
         order_id=order.id,
         title=html.escape(order.product_title),
-        qty=order.qty,
         subtotal=format_kop(order.subtotal_kop),
         discount=discount_line,
         total=format_kop(order.total_kop),
@@ -137,6 +155,9 @@ async def _show_payment_choice(
     )
 
 
+# --- оплата -----------------------------------------------------------------
+
+
 @router.callback_query(F.data.startswith("u:pay:"))
 async def choose_method(
     call: CallbackQuery,
@@ -144,6 +165,7 @@ async def choose_method(
     user: User,
     registry: PaymentRegistry,
     settings: Settings,
+    state: FSMContext,
     bot: Bot,
     **_: object,
 ) -> None:
@@ -161,7 +183,7 @@ async def choose_method(
     if method_code == "balance":
         await call.answer()
         result = await payments_service.pay_with_balance(session, order.id)
-        await _present_result(call, session, bot, result, settings)
+        await _present_result(call, session, bot, state, result)
         return
 
     try:
@@ -193,7 +215,7 @@ async def check_payment(
     session: AsyncSession,
     user: User,
     registry: PaymentRegistry,
-    settings: Settings,
+    state: FSMContext,
     bot: Bot,
     **_: object,
 ) -> None:
@@ -205,7 +227,7 @@ async def check_payment(
 
     await call.answer("Проверяем оплату…")
     result = await payments_service.confirm_order(session, registry, order_id, source="button")
-    await _present_result(call, session, bot, result, settings)
+    await _present_result(call, session, bot, state, result)
 
 
 @router.callback_query(F.data.startswith("u:cancel:"))
@@ -218,59 +240,202 @@ async def cancel_order(
         await call.answer("Заказ не найден", show_alert=True)
         return
 
-    if order.status in (OrderStatus.DELIVERED, OrderStatus.PAID):
+    if order.status not in OrderStatus.OPEN:
         await call.answer("Заказ уже оплачен — отменить нельзя", show_alert=True)
         return
 
     await orders_service.cancel(session, order)
-    await call.answer("Заказ отменён, товар вернулся в продажу")
-    await show(
-        call,
-        f"🚫 Заказ #{order.id} отменён. Товар вернулся в продажу.",
-        user_kb.simple_back(),
+    await call.answer("Заказ отменён")
+    await show(call, f"🚫 Заказ #{order.id} отменён.", user_kb.simple_back())
+
+
+# --- реквизиты аккаунта -----------------------------------------------------
+
+
+@router.callback_query(F.data.startswith("u:creds:"))
+async def resume_credentials(
+    call: CallbackQuery,
+    session: AsyncSession,
+    user: User,
+    state: FSMContext,
+    **_: object,
+) -> None:
+    """Возврат к вводу реквизитов из истории покупок."""
+    order_id = int(call.data.split(":")[2])
+    order = await orders_repo.get(session, order_id)
+    if order is None or order.user_id != user.tg_id:
+        await call.answer("Заказ не найден", show_alert=True)
+        return
+    if not delivery_service.needs_credentials(order):
+        await call.answer("По этому заказу реквизиты уже приняты", show_alert=True)
+        return
+
+    await call.answer()
+    await _ask_credentials(call, session, state, order)
+
+
+async def _ask_credentials(event, session: AsyncSession, state: FSMContext, order) -> None:
+    await state.set_state(UserSG.credentials)
+    await state.update_data(credentials_order_id=order.id)
+    text = await text_service.get(
+        session,
+        "ask_credentials",
+        order_id=order.id,
+        title=html.escape(order.product_title),
+        token=order.token or "",
     )
+    await show(event, text, user_kb.simple_back())
+
+
+@router.message(UserSG.credentials)
+async def receive_credentials(
+    message: Message,
+    session: AsyncSession,
+    user: User,
+    state: FSMContext,
+    bot: Bot,
+    **_: object,
+) -> None:
+    parsed = fulfillment_service.parse_credentials(message.text or "")
+    if parsed is None:
+        await message.answer(
+            "Не разобрал сообщение. Пришлите логин первой строкой, пароль — второй."
+        )
+        return
+
+    data = await state.get_data()
+    order_id = data.get("credentials_order_id")
+
+    if parsed.password is None:
+        # Логин есть, пароля нет — спрашиваем отдельно, а не гадаем.
+        await state.set_state(UserSG.credentials_password)
+        await state.update_data(credentials_login=parsed.login, credentials_order_id=order_id)
+        await message.answer("Принял логин. Теперь пришлите пароль отдельным сообщением.")
+        return
+
+    await _finish_credentials(message, session, user, state, bot, order_id, parsed.login, parsed.password)
+
+
+@router.message(UserSG.credentials_password)
+async def receive_password(
+    message: Message,
+    session: AsyncSession,
+    user: User,
+    state: FSMContext,
+    bot: Bot,
+    **_: object,
+) -> None:
+    password = (message.text or "").strip()
+    if not password:
+        await message.answer("Пароль пустой. Пришлите его текстом.")
+        return
+
+    data = await state.get_data()
+    await _finish_credentials(
+        message,
+        session,
+        user,
+        state,
+        bot,
+        data.get("credentials_order_id"),
+        data.get("credentials_login") or "",
+        password,
+    )
+
+
+async def _finish_credentials(
+    message: Message,
+    session: AsyncSession,
+    user: User,
+    state: FSMContext,
+    bot: Bot,
+    order_id: int | None,
+    login: str,
+    password: str,
+) -> None:
+    if not order_id:
+        await state.set_state(None)
+        await message.answer(
+            "Не понял, к какому заказу это относится. Откройте заказ в профиле "
+            "и нажмите «Отправить логин и пароль».",
+            reply_markup=user_kb.simple_back(),
+        )
+        return
+
+    order = await orders_repo.get_for_update(session, int(order_id))
+    if order is None or order.user_id != user.tg_id:
+        await state.set_state(None)
+        await message.answer("Заказ не найден.", reply_markup=user_kb.simple_back())
+        return
+
+    result = await delivery_service.accept_credentials(session, order, login, password)
+    await state.set_state(None)
+    await state.update_data(credentials_order_id=None, credentials_login=None)
+
+    if result.repeated:
+        await message.answer(
+            "Реквизиты по этому заказу уже приняты.", reply_markup=user_kb.simple_back()
+        )
+        return
+    if not result.ok:
+        await message.answer(
+            "Этот заказ сейчас не ждёт реквизиты.", reply_markup=user_kb.simple_back()
+        )
+        return
+
+    text = await text_service.get(
+        session,
+        "credentials_accepted",
+        order_id=order.id,
+        token=order.token or "",
+        title=html.escape(order.product_title),
+    )
+    await message.answer(text, reply_markup=user_kb.simple_back())
+    await _notify_admins_in_work(bot, session, order)
+
+
+async def _notify_admins_in_work(bot: Bot, session: AsyncSession, order) -> None:
+    """Отдаёт заказ администраторам вместе с реквизитами."""
+    buyer = await users_repo.get_user(session, order.user_id)
+    await notify_service.notify_admins(
+        bot,
+        session,
+        fulfillment_service.admin_card(order, buyer),
+        reply_markup=admin_kb.fulfillment_card(
+            order.id, fulfillment_service.buyer_username(buyer)
+        ),
+    )
+
+
+# --- исход проверки оплаты --------------------------------------------------
 
 
 async def _present_result(
     call: CallbackQuery,
     session: AsyncSession,
     bot: Bot,
+    state: FSMContext,
     result: payments_service.ConfirmResult,
-    settings: Settings,
 ) -> None:
-    """Показывает покупателю исход проверки оплаты."""
     outcome = result.outcome
     order = result.order
 
-    if outcome in (payments_service.Outcome.DELIVERED, payments_service.Outcome.ALREADY):
-        items = result.items or await delivery_service.items_of(session, order.id)
-        text = await text_service.get(
-            session,
-            "delivery",
-            order_id=order.id,
-            title=html.escape(order.product_title),
-            qty=order.qty,
-            items=delivery_service.format_items(items),
-        )
-        await show(call, text, user_kb.simple_back())
-        # Файлы уходят отдельными сообщениями: в подпись к экрану их не вложить.
-        await dispatch_service.send_items(bot, order.user_id, items)
-        if outcome == payments_service.Outcome.DELIVERED:
-            await _after_sale(bot, session, order)
+    if outcome == payments_service.Outcome.ACCEPTED:
+        await _after_payment(bot, session, order)
+        await _ask_credentials(call, session, state, order)
         return
 
-    if outcome == payments_service.Outcome.AWAITING:
-        support = await settings_store.get(session, "support_contact") or "@support"
-        text = await text_service.get(
-            session,
-            "delivery_manual",
-            order_id=order.id,
-            title=html.escape(order.product_title),
-            qty=order.qty,
-            support=support,
+    if outcome == payments_service.Outcome.ALREADY:
+        if delivery_service.needs_credentials(order):
+            await _ask_credentials(call, session, state, order)
+            return
+        status = OrderStatus.TITLES.get(order.status, order.status)
+        await show(
+            call,
+            f"🧾 Заказ #{order.id} · токен <code>{order.token or '—'}</code>\n"
+            f"📌 {status}",
+            user_kb.simple_back(),
         )
-        await show(call, text, user_kb.simple_back())
-        await _notify_manual(bot, session, order)
         return
 
     if outcome == payments_service.Outcome.TOPPED_UP:
@@ -278,19 +443,6 @@ async def _present_result(
             call,
             f"✅ Баланс пополнен на {format_kop(order.total_kop)}.",
             user_kb.simple_back(),
-        )
-        return
-
-    if outcome == payments_service.Outcome.SHORTAGE:
-        await show(call, await text_service.get(session, "delivery_shortage"), user_kb.simple_back())
-        await notify_service.notify_admins(
-            bot,
-            session,
-            f"⚠️ Заказ #{order.id} оплачен, но выдать нечего.\n"
-            f"Покупатель: <code>{order.user_id}</code>\n"
-            f"Товар: {html.escape(order.product_title)} × {order.qty}\n"
-            f"Сумма: {format_kop(order.total_kop)}\n\n"
-            f"Нужно пополнить склад и выдать вручную либо вернуть деньги.",
         )
         return
 
@@ -305,7 +457,7 @@ async def _present_result(
             bot,
             session,
             f"🚨 Платёж не сошёлся с заказом #{order.id}: {result.detail}\n"
-            f"Покупатель: <code>{order.user_id}</code>. Выдача остановлена.",
+            f"Покупатель: <code>{order.user_id}</code>. Заказ остановлен.",
         )
         return
 
@@ -332,50 +484,22 @@ async def _present_result(
     await call.answer(await text_service.get(session, "payment_not_confirmed"), show_alert=True)
 
 
-async def _notify_manual(bot: Bot, session: AsyncSession, order) -> None:
-    """Зовёт администраторов на ручную выдачу.
+async def _after_payment(bot: Bot, session: AsyncSession, order) -> None:
+    """Сообщает администраторам о поступивших деньгах.
 
-    Уведомление отправляется один раз — при переводе заказа в ожидание.
-    Повторная проверка оплаты в этот путь уже не заходит.
+    Это не то же самое, что заказ в работу: реквизитов ещё нет. Уведомление
+    отделено намеренно — по нему видно оплаченные заказы, до которых покупатель
+    так и не дошёл.
     """
-    if order.status != OrderStatus.AWAITING:
+    if not await settings_store.get_bool(session, "notify_admins_on_payment", True):
         return
-    buyer = await users_repo.get_user(session, order.user_id)
-    contact = f"@{buyer.username}" if buyer and buyer.username else "без username"
     await notify_service.notify_admins(
         bot,
         session,
-        f"🙋 <b>Заказ #{order.id} ждёт ручной выдачи</b>\n\n"
-        f"📦 {html.escape(order.product_title)} × {order.qty}\n"
-        f"💰 {format_kop(order.total_kop)}\n"
-        f"👤 Покупатель: {html.escape(contact)} "
-        f"(<code>{order.user_id}</code>)\n\n"
-        f"Свяжитесь с покупателем и закройте заказ кнопкой «Выдать вручную» "
-        f"в карточке заказа.",
+        f"💰 Оплачен заказ #{order.id}\n"
+        f"🎟 Токен: <code>{order.token or '—'}</code>\n"
+        f"📦 {html.escape(order.product_title)}\n"
+        f"💵 {format_kop(order.total_kop)}\n"
+        f"👤 <code>{order.user_id}</code>\n\n"
+        f"Ждём от покупателя логин и пароль.",
     )
-
-
-async def _after_sale(bot: Bot, session: AsyncSession, order) -> None:
-    """Уведомления после успешной продажи."""
-    if await settings_store.get_bool(session, "notify_admins_on_payment", True):
-        await notify_service.notify_admins(
-            bot,
-            session,
-            f"💰 Оплачен заказ #{order.id}\n"
-            f"Товар: {html.escape(order.product_title)} × {order.qty}\n"
-            f"Сумма: {format_kop(order.total_kop)}\n"
-            f"Покупатель: <code>{order.user_id}</code>",
-        )
-
-    threshold = await settings_store.get_int(session, "low_stock_threshold", 3)
-    if order.product_id is None or threshold <= 0:
-        return
-    from bot.repo import stock as stock_repo
-
-    left = await stock_repo.available_count(session, order.product_id)
-    if left <= threshold:
-        await notify_service.notify_admins(
-            bot,
-            session,
-            f"📉 Мало на складе: {html.escape(order.product_title)} — осталось {left} шт.",
-        )

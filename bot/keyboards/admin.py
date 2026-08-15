@@ -6,7 +6,6 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from bot.db.models import (
     Admin,
-    DeliveryType,
     Broadcast,
     Category,
     Channel,
@@ -15,7 +14,6 @@ from bot.db.models import (
     Product,
     PromoCode,
     SettingEntry,
-    StockBatch,
     TextEntry,
 )
 from bot.keyboards.theme import (
@@ -28,6 +26,7 @@ from bot.keyboards.theme import (
     pager_row,
     toggle_mark,
 )
+from bot.services.pricing import format_usd
 from bot.utils.money import format_kop
 
 
@@ -136,19 +135,15 @@ def category_card(category: Category, products_count: int) -> InlineKeyboardMark
 
 
 def products(
-    items: list[Product], stock: dict[int, int], category_id: int, page: int, pages: int
+    items: list[Product], category_id: int, page: int, pages: int
 ) -> InlineKeyboardMarkup:
     rows = []
     for product in items:
-        if product.delivery_type == DeliveryType.MANUAL:
-            left = "вручную"
-        else:
-            left = f"{stock.get(product.id, 0)} шт"
         rows.append(
             [
                 btn(
                     f"{toggle_mark(product.is_active)} {product.title} · "
-                    f"{format_kop(product.price_kop)} · {left}",
+                    f"{format_usd(product.price_usd_cents)}",
                     callback_data=f"a:prod:{product.id}",
                     style=SECONDARY,
                 )
@@ -156,7 +151,7 @@ def products(
         )
     rows.append(pager_row(f"a:prods:{category_id}:", page, pages))
     rows.append(
-        [btn(f"{ICON['add']} Новый товар", callback_data=f"a:prod_add:{category_id}", style=SUCCESS)]
+        [btn(f"{ICON['add']} Выложить товар", callback_data=f"a:prod_add:{category_id}", style=SUCCESS)]
     )
     rows.append(back_row(f"a:cat:{category_id}"))
     return _kb(rows)
@@ -165,10 +160,9 @@ def products(
 def product_card(product: Product) -> InlineKeyboardMarkup:
     return _kb(
         [
-            [btn(f"{ICON['stock']} Склад", callback_data=f"a:stock:{product.id}", style=PRIMARY)],
             [
                 btn(f"{ICON['edit']} Название", callback_data=f"a:prod_edit:{product.id}:title", style=SECONDARY),
-                btn(f"{ICON['edit']} Цена", callback_data=f"a:prod_edit:{product.id}:price", style=SECONDARY),
+                btn(f"{ICON['edit']} Цена $", callback_data=f"a:prod_edit:{product.id}:price", style=SECONDARY),
             ],
             [
                 btn(f"{ICON['edit']} Описание", callback_data=f"a:prod_edit:{product.id}:desc", style=SECONDARY),
@@ -176,9 +170,6 @@ def product_card(product: Product) -> InlineKeyboardMarkup:
             ],
             [
                 btn("📂 Сменить категорию", callback_data=f"a:prod_cat:{product.id}", style=SECONDARY),
-            ],
-            [
-                btn("🚚 Тип выдачи", callback_data=f"a:prod_type_edit:{product.id}", style=SECONDARY),
             ],
             [
                 btn(f"{ICON['up']} Выше", callback_data=f"a:prod_move:{product.id}:-1", style=SECONDARY),
@@ -197,41 +188,6 @@ def product_card(product: Product) -> InlineKeyboardMarkup:
     )
 
 
-def delivery_type_picker(category_id: int) -> InlineKeyboardMarkup:
-    """Выбор типа выдачи — первый шаг создания товара.
-
-    Тип определяет всё дальнейшее: нужен ли склад, что заливает админ и что
-    происходит после оплаты. Спрашивать его в конце значит переспрашивать.
-    """
-    rows = [
-        [
-            btn(
-                DeliveryType.TITLES[kind],
-                callback_data=f"a:prod_type:{category_id}:{kind}",
-                style=SUCCESS,
-            )
-        ]
-        for kind in DeliveryType.ALL
-    ]
-    rows.append(back_row(f"a:prods:{category_id}:0"))
-    return _kb(rows)
-
-
-def delivery_type_switch(product_id: int) -> InlineKeyboardMarkup:
-    rows = [
-        [
-            btn(
-                DeliveryType.TITLES[kind],
-                callback_data=f"a:prod_settype:{product_id}:{kind}",
-                style=SUCCESS,
-            )
-        ]
-        for kind in DeliveryType.ALL
-    ]
-    rows.append(back_row(f"a:prod:{product_id}"))
-    return _kb(rows)
-
-
 def category_picker(items: list[Category], product_id: int) -> InlineKeyboardMarkup:
     rows = [
         [
@@ -245,51 +201,6 @@ def category_picker(items: list[Category], product_id: int) -> InlineKeyboardMar
     ]
     rows.append(back_row(f"a:prod:{product_id}"))
     return _kb(rows)
-
-
-# --- склад ------------------------------------------------------------------
-
-
-def stock_card(product: Product, batches: list[StockBatch]) -> InlineKeyboardMarkup:
-    rows = [
-        [
-            btn(
-                f"{ICON['add']} Залить позиции",
-                callback_data=f"a:stock_add:{product.id}",
-                style=SUCCESS,
-            )
-        ]
-    ]
-    for batch in batches[:8]:
-        rows.append(
-            [
-                btn(
-                    f"📥 Завоз {batch.created_at.strftime('%d.%m %H:%M')} — {batch.items_count} шт",
-                    callback_data=f"a:batch:{batch.id}",
-                    style=SECONDARY,
-                )
-            ]
-        )
-    rows.append(
-        [btn("🧹 Убрать брак", callback_data=f"a:stock_purge:{product.id}", style=DANGER)]
-    )
-    rows.append(back_row(f"a:prod:{product.id}"))
-    return _kb(rows)
-
-
-def batch_card(batch: StockBatch) -> InlineKeyboardMarkup:
-    return _kb(
-        [
-            [
-                btn(
-                    "🚫 Забраковать всю партию",
-                    callback_data=f"a:batch_reject:{batch.id}",
-                    style=DANGER,
-                )
-            ],
-            back_row(f"a:stock:{batch.product_id}"),
-        ]
-    )
 
 
 # --- заказы -----------------------------------------------------------------
@@ -320,32 +231,38 @@ def orders(items: list[Order], page: int, pages: int, status: str | None) -> Inl
 
 
 def order_card(
-    order: Order, can_refund: bool, can_replace: bool, needs_manual: bool = False
+    order: Order,
+    can_refund: bool,
+    can_confirm: bool = False,
+    buyer_username: str | None = None,
 ) -> InlineKeyboardMarkup:
     rows: list[list[InlineKeyboardButton]] = []
-    if needs_manual:
+    if can_confirm:
         rows.append(
             [
                 btn(
-                    "🙋 Выдать вручную",
-                    callback_data=f"a:order_manual:{order.id}",
+                    "✅ Подтвердить выполнение",
+                    callback_data=f"a:done:{order.id}",
                     style=SUCCESS,
                 )
             ]
         )
-    if can_replace:
+    if buyer_username:
         rows.append(
-            [btn(f"{ICON['replace']} Заменить товар", callback_data=f"a:order_replace:{order.id}", style=SUCCESS)]
+            [
+                btn(
+                    "💬 Связаться с покупателем",
+                    url=f"https://t.me/{buyer_username}",
+                    style=PRIMARY,
+                )
+            ]
         )
     if can_refund:
         rows.append(
             [btn(f"{ICON['refund']} Вернуть деньги", callback_data=f"a:order_refund:{order.id}", style=DANGER)]
         )
     rows.append(
-        [
-            btn("📄 Что выдано", callback_data=f"a:order_items:{order.id}", style=SECONDARY),
-            btn("💳 Платежи", callback_data=f"a:order_pays:{order.id}", style=SECONDARY),
-        ]
+        [btn("💳 Платежи", callback_data=f"a:order_pays:{order.id}", style=SECONDARY)]
     )
     rows.append(
         [btn(f"{ICON['block']} Заблокировать покупателя", callback_data=f"a:order_block:{order.id}", style=DANGER)]
@@ -568,3 +485,40 @@ def users_menu() -> InlineKeyboardMarkup:
             back_row("a:menu"),
         ]
     )
+
+
+# --- уведомление о заказе в работе ------------------------------------------
+
+
+def fulfillment_card(order_id: int, buyer_username: str | None) -> InlineKeyboardMarkup:
+    """Кнопки под сообщением администратору о новом заказе.
+
+    Кнопка «Связаться» ставится только при наличии юзернейма. Для покупателя
+    без него Bot API допускает `tg://user?id=`, но открывается такая ссылка
+    лишь если это разрешено настройками приватности, — а кнопка, которая
+    молча не срабатывает, читается как поломка бота. Вместо неё в тексте
+    сообщения стоит упоминание.
+    """
+    rows = [
+        [
+            btn(
+                "✅ Подтвердить выполнение",
+                callback_data=f"a:done:{order_id}",
+                style=SUCCESS,
+            )
+        ]
+    ]
+    if buyer_username:
+        rows.append(
+            [
+                btn(
+                    "💬 Связаться с покупателем",
+                    url=f"https://t.me/{buyer_username}",
+                    style=PRIMARY,
+                )
+            ]
+        )
+    rows.append(
+        [btn(f"{ICON['orders']} Открыть заказ", callback_data=f"a:order:{order_id}", style=SECONDARY)]
+    )
+    return _kb(rows)

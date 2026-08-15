@@ -62,6 +62,35 @@ def switch_layout(text: str) -> str:
     return "".join(_LAYOUT.get(char, char) for char in text)
 
 
+# Кириллица → латиница. Нужна не для красоты: магазин продаёт иностранные
+# сервисы русским покупателям, и «нетфликс», «чатгпт», «спотифай» — это самый
+# частый вид запроса. Переключение раскладки здесь не помогает: оно переводит
+# «Ytnabrc» в «нетфликс», а до «Netflix» остаётся ровно этот шаг.
+#
+# Таблица нарочно грубая и односторонняя. Задача — не транскрипция, а сведение
+# обоих написаний к одной строке, которую дальше сравнивает нечёткий поиск;
+# «netfliks» против «netflix» он разбирает уверенно.
+_TRANSLIT = {
+    "а": "a", "б": "b", "в": "v", "г": "g", "д": "d", "е": "e", "ж": "zh",
+    "з": "z", "и": "i", "й": "y", "к": "k", "л": "l", "м": "m", "н": "n",
+    "о": "o", "п": "p", "р": "r", "с": "s", "т": "t", "у": "u", "ф": "f",
+    "х": "h", "ц": "c", "ч": "ch", "ш": "sh", "щ": "sch", "ъ": "", "ы": "y",
+    "ь": "", "э": "e", "ю": "yu", "я": "ya",
+}
+
+
+def translit(text: str) -> str:
+    """Сводит кириллицу к латинице. Латиница проходит насквозь.
+
+    Применяется и к запросу, и к названию товара — тогда «нетфликс» и
+    «Netflix» встречаются в одной форме независимо от того, что из них
+    на каком языке написано.
+    """
+    if not text:
+        return ""
+    return "".join(_TRANSLIT.get(char, char) for char in text)
+
+
 def rank(
     query: str,
     items: list[tuple[int, str]],
@@ -75,12 +104,17 @@ def rank(
         return []
 
     ranked: list[tuple[float, int, int, int, int]] = []
-    for index, (item_id, title) in enumerate(items[:limit]):
+    for index, (item_id, title) in enumerate(items):
         title_norm = normalize(title)
         if not title_norm:
             continue
 
-        is_exact, score = _best_score(variants, title_norm)
+        title_forms = (title_norm,)
+        title_translit = translit(title_norm)
+        if title_translit != title_norm:
+            title_forms += (title_translit,)
+
+        is_exact, score = _best_score(variants, title_forms)
         if score < threshold:
             continue
 
@@ -97,7 +131,7 @@ def rank(
     # index в ключе стоит перед item_id, поэтому при полном равенстве порядок
     # берётся из items, а не из значений id.
     ranked.sort()
-    return [row[-1] for row in ranked]
+    return [row[-1] for row in ranked[:limit]]
 
 
 def _query_variants(query: str) -> list[str]:
@@ -106,23 +140,92 @@ def _query_variants(query: str) -> list[str]:
     Пробуем оба: если покупатель забыл переключить раскладку, осмысленным
     окажется только перевёрнутый вариант, а какой именно — заранее неизвестно.
     """
-    variants: list[str] = []
-    for candidate in (normalize(query), normalize(switch_layout(query))):
-        if candidate and candidate not in variants:
-            variants.append(candidate)
+    direct = normalize(query)
+    if not direct:
+        # Запрос из одних знаков препинания. Переворачивать его нельзя:
+        # «.» в другой раскладке — это «ю», и поиск начнёт отвечать товарами
+        # на запрос из одной точки.
+        return []
+
+    variants = [direct]
+    switched = normalize(switch_layout(query))
+    # Перевёрнутый вариант берём, только если перевод раскладки не съел букв.
+    # Кириллические «ю», «б», «х», «ъ», «ж», «э», «ё» на латинской раскладке —
+    # знаки препинания, и нормализация их срезает: «ютуб» превращается в
+    # огрызок «ne», который оказывается подстрокой «Netflix» и забирает себе
+    # честные 100 за точное вхождение. Настоящая забытая раскладка букв не
+    # теряет — наоборот, добирает их из знаков препинания («gk.c» → «плюс»), —
+    # поэтому такой вариант проходит.
+    if switched and switched != direct and _word_length(switched) >= _word_length(direct):
+        variants.append(switched)
+
+    # Латинская форма каждого варианта: «нетфликс» → «netfliks». Ради неё же
+    # латинизируется и название товара — встречаются они уже в одном алфавите.
+    for variant in list(variants):
+        latin = translit(variant)
+        if latin and latin not in variants:
+            variants.append(latin)
     return variants
 
 
-def _best_score(variants: list[str], title_norm: str) -> tuple[bool, float]:
+def _word_length(normalized: str) -> int:
+    """Сколько букв и цифр в нормализованной строке; пробелы не в счёт."""
+    return len(normalized) - normalized.count(" ")
+
+
+def _best_score(variants: list[str], title_forms: tuple[str, ...]) -> tuple[bool, float]:
     """Лучший вес названия по всем вариантам запроса: (точное вхождение, вес).
 
     Два прохода. Первый — точное вхождение запроса в название: такой товар
     обязан быть наверху, иначе короткое совпадение тонет под длинным мусором
     с похожим весом. Второй — нечёткое сравнение по множествам слов.
+
+    `title_forms` — название в нескольких написаниях (как есть и в латинице).
+    Сравниваются все пары «вариант запроса × форма названия»: заранее не
+    известно, что из них на каком языке написано.
     """
     best_score = 0.0
     for variant in variants:
-        if variant in title_norm:
-            return True, _EXACT_SCORE  # выше уже не будет, дальше не считаем
-        best_score = max(best_score, float(fuzz.token_set_ratio(variant, title_norm)))
+        for form in title_forms:
+            if variant in form:
+                return True, _EXACT_SCORE  # выше уже не будет, дальше не считаем
+            best_score = max(best_score, _token_coverage(variant, form))
     return False, best_score
+
+
+_SIGNIFICANT_TOKEN = 4
+"""Слово короче этого считается служебным: «pro», «1», «мес», «на»."""
+
+
+def _token_coverage(variant: str, form: str) -> float:
+    """Каждое слово запроса ищет себе самое похожее слово в названии.
+
+    Без этого прохода однословный запрос тонет в длинном названии:
+    `token_set_ratio("netfliks", "netflix premium 1 mesyac")` низок не потому,
+    что слова непохожи, а потому что в названии есть ещё три слова. Сравнение
+    по словам эту разницу убирает — «netfliks» находит «netflix» и получает
+    свои честные 93.
+
+    Два правила, и второе важнее первого:
+
+    * вес слова — его длина, иначе «1» и «мес» тянули бы результат наравне
+      с основным словом;
+    * **значимое слово, не нашедшее пары, снимает кандидата целиком.** Без
+      этого «премиум нетфликс» находит Spotify Premium: слово «премиум»
+      совпадает на сто, «нетфликс» — почти ни на сколько, а среднее всё равно
+      проходит порог. Одно общее слово не делает товары похожими.
+    """
+    query_tokens = variant.split()
+    title_tokens = form.split()
+    if not query_tokens or not title_tokens:
+        return 0.0
+
+    weighted = 0.0
+    total_weight = 0
+    for token in query_tokens:
+        best = max(float(fuzz.ratio(token, other)) for other in title_tokens)
+        if len(token) >= _SIGNIFICANT_TOKEN and best < DEFAULT_THRESHOLD:
+            return 0.0
+        weighted += best * len(token)
+        total_weight += len(token)
+    return weighted / total_weight if total_weight else 0.0
