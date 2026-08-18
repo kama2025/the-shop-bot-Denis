@@ -27,7 +27,7 @@ from tests.factories import DEFAULT_RATE_KOP, make_product, make_user
 
 pytestmark = pytest.mark.db
 
-ADMIN = Actor(user_id=470934697, is_admin=True)
+ADMIN = Actor(user_id=100000001, is_admin=True)
 
 
 async def _order_in(session, status: str, tg_id: int):
